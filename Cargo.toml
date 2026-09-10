@@ -1,0 +1,54 @@
+[package]
+name = "gitdrift"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+description = "Find git repositories that have drifted: unpushed, unpulled, dirty or stashed"
+license = "MIT"
+
+[lib]
+name = "gitdrift"
+path = "src/lib.rs"
+
+[[bin]]
+name = "gitdrift"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+crossbeam-channel = "0.5"
+crossterm = "0.29"
+ignore = "0.4"
+num_cpus = "1"
+# unstable-rendered-line-info: Paragraph::line_count, the only exact source of
+# wrapped height, which the detail pane needs to bound its scroll.
+ratatui = { version = "0.30", features = ["unstable-rendered-line-info"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+shellexpand = "3"
+toml = "1"
+
+[dependencies.gix]
+version = "0.87"
+default-features = false
+features = [
+  "sha1",
+  "max-performance-safe",
+  "parallel",
+  "status",
+  "revision",
+  "dirwalk",
+  "index",
+  "blob-diff",
+]
+
+[dev-dependencies]
+assert_cmd = "2"
+predicates = "3"
+tempfile = "3"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
