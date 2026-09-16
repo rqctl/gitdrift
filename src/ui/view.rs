@@ -199,7 +199,7 @@ fn row_line(
         cursor(selected),
         Span::styled(
             if marked { "● " } else { "  " },
-            Style::default().fg(theme::Color::Accent.to_ratatui()),
+            Style::default().fg(theme::Color::Rosewater.to_ratatui()),
         ),
     ];
     let (name, used) = name_spans_width(s, cols.name);
@@ -303,8 +303,10 @@ fn draw_list(frame: &mut Frame, app: &App, area: Rect, state: &mut ListState) {
     let title = format!(" {count} · {scope} · by {} ", app.sort_mode().label());
     let block = Block::default()
         .borders(Borders::ALL)
+        .border_style(theme::border_style())
         .padding(Padding::horizontal(1))
-        .title(title);
+        .title(title)
+        .title_style(theme::title_style());
 
     if visible.is_empty() {
         let msg = if app.is_scanning() {
@@ -367,8 +369,10 @@ fn scrollable(
         body.block(
             Block::default()
                 .borders(Borders::ALL)
+                .border_style(theme::border_style())
                 .padding(Padding::horizontal(1))
-                .title(format!(" {title} {arrows}")),
+                .title(format!(" {title} {arrows}"))
+                .title_style(theme::title_style()),
         )
         .scroll((scroll, 0)),
         area,
@@ -380,8 +384,10 @@ fn draw_detail(frame: &mut Frame, app: &App, detail: Option<&RepoDetail>, area: 
     let block = || {
         Block::default()
             .borders(Borders::ALL)
+            .border_style(theme::border_style())
             .padding(Padding::horizontal(1))
             .title(" Detail ")
+            .title_style(theme::title_style())
     };
     let Some(sel) = app.selected() else {
         frame.render_widget(Paragraph::new("").block(block()), area);
@@ -566,8 +572,10 @@ fn draw_problems(frame: &mut Frame, app: &App, area: Rect) -> u16 {
 fn draw_confirm(frame: &mut Frame, app: &App, area: Rect) {
     let block = Block::default()
         .borders(Borders::ALL)
+        .border_style(theme::border_style())
         .padding(Padding::horizontal(1))
-        .title(" Confirm ");
+        .title(" Confirm ")
+        .title_style(theme::title_style());
     let Some(pending) = app.pending() else {
         frame.render_widget(Paragraph::new("").block(block), area);
         return;
@@ -666,8 +674,10 @@ fn draw_picker(
 
     let block = Block::default()
         .borders(Borders::ALL)
+        .border_style(theme::border_style())
         .padding(Padding::horizontal(1))
-        .title(format!(" {title} "));
+        .title(format!(" {title} "))
+        .title_style(theme::title_style());
     let inner = block.inner(popup);
     frame.render_widget(Clear, popup);
     frame.render_widget(block, popup);

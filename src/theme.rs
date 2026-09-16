@@ -21,6 +21,15 @@ pub enum Color {
     /// Background of the selected row. Kept out of `Facet`: it is chrome, not
     /// a repository state.
     Selection,
+    /// Panel chrome (titles): Catppuccin Mocha teal, matching k9s'
+    /// `frame.title.fgColor`.
+    Teal,
+    /// Panel chrome (borders): Catppuccin Mocha mauve, matching k9s'
+    /// `frame.border.fgColor`.
+    Mauve,
+    /// The mark dot on a marked row: Catppuccin Mocha rosewater, matching
+    /// k9s' `views.table.markColor`.
+    Rosewater,
 }
 
 impl Color {
@@ -38,6 +47,9 @@ impl Color {
             Color::Dim => "\x1b[2m",
             Color::Accent => "\x1b[36m",
             Color::Selection => "\x1b[100m",
+            Color::Teal => "\x1b[38;2;148;226;213m",
+            Color::Mauve => "\x1b[38;2;203;166;247m",
+            Color::Rosewater => "\x1b[38;2;245;224;220m",
         }
     }
 
@@ -56,8 +68,23 @@ impl Color {
             Color::Dim => C::DarkGray,
             Color::Accent => C::Cyan,
             Color::Selection => C::Indexed(236),
+            Color::Teal => C::Rgb(148, 226, 213),
+            Color::Mauve => C::Rgb(203, 166, 247),
+            Color::Rosewater => C::Rgb(245, 224, 220),
         }
     }
+}
+
+/// Panel title style: bold teal, Catppuccin Mocha's k9s-style chrome.
+pub fn title_style() -> ratatui::style::Style {
+    ratatui::style::Style::default()
+        .fg(Color::Teal.to_ratatui())
+        .add_modifier(ratatui::style::Modifier::BOLD)
+}
+
+/// Panel border style: Catppuccin Mocha mauve, matching `title_style`'s chrome.
+pub fn border_style() -> ratatui::style::Style {
+    ratatui::style::Style::default().fg(Color::Mauve.to_ratatui())
 }
 
 /// One aspect of a repository's state. Each has exactly one colour and one

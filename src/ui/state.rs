@@ -773,7 +773,15 @@ impl App {
                 self.detail_command()
             }
             KeyCode::Char('f') => self.act(Command::Fetch),
-            KeyCode::Char('p') => self.act(Command::Pull),
+            KeyCode::Char('p') => {
+                let had_marks = !self.marked.is_empty();
+                let command = self.act(Command::Pull);
+                if had_marks && !matches!(command, Command::None) {
+                    self.marked.clear();
+                    self.anchor = None;
+                }
+                command
+            }
             // Uppercase only: this destroys work, so a mistyped lowercase key
             // must not reach it. It then waits on a confirmation.
             KeyCode::Char('P') => self.confirm(Destructive::Prune),
@@ -1195,6 +1203,19 @@ mod tests {
             Command::Fetch(paths) => assert_eq!(paths.len(), 2),
             other => panic!("expected two targets, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn pull_clears_the_marks_it_acted_on() {
+        let mut app = app_with(vec![row("a", 1), row("b", 1)]);
+        app.on_key(key(' ')); // mark row 0
+        app.on_key(code(KeyCode::Down));
+        app.on_key(key(' ')); // mark row 1
+        match app.on_key(key('p')) {
+            Command::Pull(paths) => assert_eq!(paths.len(), 2),
+            other => panic!("expected two targets, got {other:?}"),
+        }
+        assert_eq!(app.marked_count(), 0, "marks should not survive the pull");
     }
 
     #[test]
