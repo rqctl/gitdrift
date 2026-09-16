@@ -27,9 +27,8 @@ pub enum Color {
     /// Panel chrome (borders): Catppuccin Mocha mauve, matching k9s'
     /// `frame.border.fgColor`.
     Mauve,
-    /// The mark dot on a marked row: Catppuccin Mocha rosewater, matching
-    /// k9s' `views.table.markColor`.
-    Rosewater,
+    /// The mark dot on a marked row: Catppuccin Mocha pink.
+    Pink,
 }
 
 impl Color {
@@ -49,7 +48,7 @@ impl Color {
             Color::Selection => "\x1b[100m",
             Color::Teal => "\x1b[38;2;148;226;213m",
             Color::Mauve => "\x1b[38;2;203;166;247m",
-            Color::Rosewater => "\x1b[38;2;245;224;220m",
+            Color::Pink => "\x1b[38;2;245;194;231m",
         }
     }
 
@@ -70,7 +69,7 @@ impl Color {
             Color::Selection => C::Indexed(236),
             Color::Teal => C::Rgb(148, 226, 213),
             Color::Mauve => C::Rgb(203, 166, 247),
-            Color::Rosewater => C::Rgb(245, 224, 220),
+            Color::Pink => C::Rgb(245, 194, 231),
         }
     }
 }

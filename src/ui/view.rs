@@ -16,6 +16,8 @@ use crate::theme::{self, Facet};
 use crate::ui::state::{App, Job, Pane};
 
 const DETAIL_MIN_WIDTH: u16 = 100;
+/// 3 content rows (drift tally, activity, hints) plus the block's own border.
+const HEADER_HEIGHT: u16 = 5;
 
 fn facet_style(f: Facet) -> Style {
     let mut s = Style::default().fg(f.color().to_ratatui());
@@ -199,7 +201,7 @@ fn row_line(
         cursor(selected),
         Span::styled(
             if marked { "● " } else { "  " },
-            Style::default().fg(theme::Color::Rosewater.to_ratatui()),
+            Style::default().fg(theme::Color::Pink.to_ratatui()),
         ),
     ];
     let (name, used) = name_spans_width(s, cols.name);
@@ -244,20 +246,22 @@ pub fn draw(
     let area = frame.area();
     let rows = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(1), Constraint::Length(1)])
+        .constraints([Constraint::Length(HEADER_HEIGHT), Constraint::Min(1)])
         .split(area);
+
+    draw_header(frame, app, rows[0]);
 
     let show_detail = area.width >= DETAIL_MIN_WIDTH && app.pane() == Pane::List;
     let body = if show_detail {
         Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
-            .split(rows[0])
+            .split(rows[1])
     } else {
         Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Percentage(100)])
-            .split(rows[0])
+            .split(rows[1])
     };
 
     let mut max_scroll = 0;
@@ -284,8 +288,6 @@ pub fn draw(
             }
         }
     }
-    draw_footer(frame, app, rows[1]);
-
     Rendered {
         detail_area: show_detail.then(|| body[1]),
         pane_max_scroll: max_scroll,
@@ -812,49 +814,78 @@ fn draw_stashes(frame: &mut Frame, app: &App, area: Rect) {
     );
 }
 
-/// The list-pane keymap, in help-pane order. Also read by the footer/help
-/// cross-check test.
-const HELP: &[(&str, &str)] = &[
-    ("↑↓ PgUp PgDn", "move"),
-    ("g / G", "first / last"),
-    ("n", "filter by namespace"),
-    ("o", "cycle sort: drift, name, recent, stale"),
-    ("Space", "mark / unmark (actions apply to marks)"),
-    ("V", "sweep the last mark's state to here"),
-    ("a", "mark all visible, or clear the marks"),
-    ("f / F", "fetch marked-or-current / fetch all"),
-    ("p", "pull --ff-only, marked-or-current"),
-    ("P", "prune gone branches (confirmed)"),
-    ("s / e", "shell / editor in repo"),
-    ("D", "diff HEAD...@{u} in your pager"),
-    ("L", "log of the incoming commits, in your pager"),
-    ("b", "switch branch on the current repo"),
-    ("S", "browse stashes: view, drop"),
-    ("x", "drop the selected stash (stash pane, confirmed)"),
-    ("J / K", "scroll the detail pane"),
+/// Grouped by which view each binding applies to; General last so it stays
+/// reachable at the bottom of a scrolled pane. Also read by the cross-check test.
+const HELP: &[(&str, &[(&str, &str)])] = &[
     (
-        "wheel",
-        "scroll the detail under the pointer, else the list",
+        "List view",
+        &[
+            ("↑↓ PgUp PgDn", "Move"),
+            ("g / Shift+g", "First / last"),
+            ("n", "Filter by namespace"),
+            ("o", "Cycle sort: drift, name, recent, stale"),
+            ("Space", "Mark / unmark (actions apply to marks)"),
+            ("Shift+v", "Sweep the last mark's state to here"),
+            ("a", "Mark all visible, or clear the marks"),
+            ("f / Shift+f", "Fetch marked-or-current / fetch all"),
+            ("p", "Pull --ff-only, marked-or-current"),
+            ("Shift+p", "Prune gone branches (confirmed)"),
+            ("s / e", "Shell / editor in repo"),
+            ("Shift+d", "Diff HEAD...@{u} in your pager"),
+            ("Shift+l", "Log of the incoming commits, in your pager"),
+            ("b", "Switch branch on the current repo"),
+            ("Shift+s", "Browse stashes: view, drop"),
+            ("r", "Rescan"),
+            ("d", "Drifted only"),
+            ("/", "Filter"),
+        ],
     ),
-    ("r", "rescan"),
-    ("d", "drifted only"),
-    ("/", "filter"),
-    ("!", "problems"),
-    ("?", "this help"),
-    ("Esc / q", "quit"),
-    ("Ctrl-C", "quit"),
+    (
+        "Stash popover",
+        &[("x", "Drop the selected stash (confirmed)")],
+    ),
+    (
+        "Detail pane",
+        &[
+            ("Shift+j / Shift+k", "Scroll the detail pane"),
+            (
+                "wheel",
+                "Scroll the detail under the pointer, else the list",
+            ),
+        ],
+    ),
+    (
+        "General",
+        &[
+            ("!", "Problems"),
+            ("?", "This help"),
+            ("Esc / q", "Quit"),
+            ("Ctrl-C", "Quit"),
+        ],
+    ),
 ];
 
 fn draw_help(frame: &mut Frame, app: &App, area: Rect) -> u16 {
-    let lines: Vec<Line> = HELP
+    let key_w = HELP
         .iter()
-        .map(|(k, v)| {
-            Line::from(vec![
-                Span::styled(format!("  {k:14}"), accent()),
+        .flat_map(|(_, rows)| rows.iter())
+        .map(|(k, _)| k.chars().count())
+        .max()
+        .unwrap_or(0)
+        + 2;
+    let mut lines: Vec<Line> = Vec::new();
+    for (i, (title, rows)) in HELP.iter().enumerate() {
+        if i > 0 {
+            lines.push(Line::raw(""));
+        }
+        lines.push(section(title));
+        for (k, v) in *rows {
+            lines.push(Line::from(vec![
+                Span::styled(format!("  {k:key_w$}"), accent()),
                 Span::raw(*v),
-            ])
-        })
-        .collect();
+            ]));
+        }
+    }
     scrollable(
         frame,
         area,
@@ -871,24 +902,24 @@ const HINTS: &[(&str, &str)] = &[
     ("n", "namespace"),
     ("o", "sort"),
     ("Space", "mark"),
-    ("V", "range"),
+    ("Shift+v", "range"),
     ("a", "all"),
     ("f", "fetch"),
     ("p", "pull"),
-    ("P", "prune"),
-    ("D", "diff"),
-    ("L", "log"),
+    ("Shift+p", "prune"),
+    ("Shift+d", "diff"),
+    ("Shift+l", "log"),
     ("b", "branch"),
-    ("S", "stash"),
+    ("Shift+s", "stash"),
     ("/", "filter"),
 ];
 
-/// Pinned at the end of the footer; never dropped for width.
+/// Pinned at the end of the hints row; never dropped for width.
 const TAIL: &str = "? help  Esc quit";
 
 /// As many labelled hints as fit. Help and quit are never dropped: a
-/// truncated footer must still say how to get out and where the rest is.
-fn footer_hints(width: usize) -> String {
+/// truncated row must still say how to get out and where the rest is.
+fn hints_line(width: usize) -> String {
     const GAP: usize = 2;
     let mut out = String::new();
     let mut used = 0usize;
@@ -909,6 +940,37 @@ fn footer_hints(width: usize) -> String {
     }
     out.push_str(TAIL);
     out
+}
+
+/// One glyph and count per non-zero facet, by the same `theme::worst` rule
+/// that colours a repo's name in the list.
+fn drift_tally(rows: &[&RepoStatus]) -> Vec<Span<'static>> {
+    let mut counts = [0usize; Facet::ALL.len()];
+    for r in rows {
+        if let Some(i) = Facet::ALL.iter().position(|f| *f == theme::worst(r)) {
+            counts[i] += 1;
+        }
+    }
+    let mut spans = Vec::new();
+    for (facet, count) in Facet::ALL.iter().zip(counts) {
+        if *facet == Facet::Clean || count == 0 {
+            continue;
+        }
+        if !spans.is_empty() {
+            spans.push(Span::raw(" "));
+        }
+        spans.push(Span::styled(
+            format!("{}{count}", facet.glyph()),
+            facet_style(*facet),
+        ));
+    }
+    if spans.is_empty() {
+        spans.push(Span::styled(
+            format!("{} all clean", Facet::Clean.glyph()),
+            facet_style(Facet::Clean),
+        ));
+    }
+    spans
 }
 
 const SPINNER: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
@@ -939,33 +1001,42 @@ fn activity(jobs: &[Job], frame: char) -> Option<String> {
     Some(format!("{frame} {} {count}{extra}", first.label))
 }
 
-fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
-    let width = area.width as usize;
-    let spans = if let Some(filter) = app.filter_text() {
+/// Drift tally, activity (job/toast/filter), and keybinding hints, top to bottom.
+fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(theme::border_style())
+        .padding(Padding::horizontal(1))
+        .title(" gitdrift ")
+        .title_style(theme::title_style());
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    // Several toasts land while a job is still running, the stash-drop
+    // recovery id among them; the spinner must not swallow them.
+    let activity_spans = if let Some(filter) = app.filter_text() {
         vec![
             Span::styled("/", accent()),
             Span::raw(filter.to_string()),
             Span::styled("▏", accent()),
         ]
     } else if let Some(text) = activity(app.jobs(), spinner_frame(since_start())) {
-        // Several toasts land while a job is still running, the stash-drop
-        // recovery id among them; the spinner must not swallow them.
         match app.toast() {
             Some(toast) => vec![Span::styled(format!("{text}  {toast}"), accent())],
-            None => {
-                let used = text.chars().count() + 2;
-                vec![
-                    Span::styled(format!("{text}  "), accent()),
-                    Span::styled(footer_hints(width.saturating_sub(used)), dim()),
-                ]
-            }
+            None => vec![Span::styled(text, accent())],
         }
     } else if let Some(toast) = app.toast() {
         vec![Span::styled(toast.to_string(), accent())]
     } else {
-        vec![Span::styled(footer_hints(width), dim())]
+        Vec::new()
     };
-    frame.render_widget(Paragraph::new(Line::from(spans)), area);
+
+    let lines = vec![
+        Line::from(drift_tally(&app.visible())),
+        Line::from(activity_spans),
+        Line::from(Span::styled(hints_line(inner.width as usize), dim())),
+    ];
+    frame.render_widget(Paragraph::new(lines), inner);
 }
 
 #[cfg(test)]
@@ -1381,7 +1452,7 @@ mod tests {
         let out = render(80, 20, &app);
         let rows: Vec<&str> = out
             .lines()
-            .filter(|l| l.starts_with('│') && l.contains('↑'))
+            .filter(|l| l.starts_with('│') && l.contains('↑') && l.contains("main"))
             .collect();
         assert_eq!(rows.len(), 2, "both rows keep their status cell:\n{out}");
         // Columns, not byte offsets: the elision marker is multi-byte.
@@ -1510,6 +1581,7 @@ mod tests {
         // the filter key, not a separator.
         let helped: Vec<&str> = HELP
             .iter()
+            .flat_map(|(_, rows)| rows.iter())
             .flat_map(|(keys, _)| {
                 if *keys == "/" {
                     vec!["/"]

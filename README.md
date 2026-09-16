@@ -33,32 +33,32 @@ gitdrift --config PATH   # use a different config file
 
 | Key | Action |
 |---|---|
-| `↑` `↓` `PgUp` `PgDn` | move |
-| `g` / `G` | first / last |
-| `n` | filter by namespace |
-| `o` | cycle sort: drift, name, recent, stale |
-| `Space` | mark / unmark |
-| `V` | sweep the last mark's state to the cursor |
-| `a` | mark all visible, or clear the marks |
-| `f` / `F` | fetch marked-or-current / fetch all |
+| `↑` `↓` `PgUp` `PgDn` | Move |
+| `g` / `Shift+g` | First / last |
+| `n` | Filter by namespace |
+| `o` | Cycle sort: drift, name, recent, stale |
+| `Space` | Mark / unmark |
+| `Shift+v` | Sweep the last mark's state to the cursor |
+| `a` | Mark all visible, or clear the marks |
+| `f` / `Shift+f` | Fetch marked-or-current / fetch all |
 | `p` | `pull --ff-only`, marked-or-current |
-| `P` | prune gone branches — asks first |
-| `s` / `e` | shell / editor in the repo |
-| `D` | diff `HEAD...@{u}` in your pager |
-| `L` | log of the incoming commits, in your pager |
-| `b` | switch branch on the current repo |
-| `J` / `K` | scroll the detail pane — the title shows `▴▾` while there is more |
-| `S` | browse stashes: view in your pager, drop — asks first |
-| `x` | drop the selected stash — stash pane only, asks first |
-| `r` | rescan |
-| `d` | drifted only |
-| `/` | filter |
-| `!` | problems |
-| `?` | help |
-| `Esc` / `q` | quit |
+| `Shift+p` | Prune gone branches — asks first |
+| `s` / `e` | Shell / editor in the repo |
+| `Shift+d` | Diff `HEAD...@{u}` in your pager |
+| `Shift+l` | Log of the incoming commits, in your pager |
+| `b` | Switch branch on the current repo |
+| `Shift+j` / `Shift+k` | Scroll the detail pane — the title shows `▴▾` while there is more |
+| `Shift+s` | Browse stashes: view in your pager, drop — asks first |
+| `x` | Drop the selected stash — stash pane only, asks first |
+| `r` | Rescan |
+| `d` | Drifted only |
+| `/` | Filter |
+| `!` | Problems |
+| `?` | Help — sectioned by which view each binding applies to |
+| `Esc` / `q` | Quit |
 
-`Space` marks rows; `f`, `p` and `P` then act on every marked
-repository instead of the one under the cursor. `V` marks everything between the last
+`Space` marks rows; `f`, `p` and `Shift+p` then act on every marked
+repository instead of the one under the cursor. `Shift+v` marks everything between the last
 mark and the cursor, and `a` marks the whole visible list — or clears the
 marks, if there are any. Marks survive a rescan, and only ever apply to
 repositories still on screen: narrowing by namespace or filter narrows the
@@ -67,8 +67,13 @@ action too, and gitdrift says so rather than quietly doing nothing.
 `n` opens a picker listing every top-level namespace (`idp`, `mkp`, `aws`, …)
 with its repository count, plus "all". Pick one with `↑`/`↓` and `Enter`; it
 beats scrolling a few hundred rows. `o` changes the order: drift (the
-default), name, most recently committed, least recently fetched. The title
-bar shows both.
+default), name, most recently committed, least recently fetched. The list
+pane's own title bar shows both.
+
+The header at the top of the screen carries a colour-coded tally of what's
+drifted across the visible repositories (e.g. `↑3 ⊘2`, or `✔ all clean`),
+whatever's currently happening — a running job's spinner and progress, a
+toast, or the filter you're typing — and the keybinding hints.
 
 `Esc` closes the filter or an open pane first, and quits only when there is
 nothing left to close. The help and problems panes scroll with `↑`/`↓`,
@@ -76,12 +81,13 @@ nothing left to close. The help and problems panes scroll with `↑`/`↓`,
 
 ## Destroying work
 
-`P` throws work away, so it is uppercase and shows you what you are about to
-lose before anything happens:
+`Shift+p` throws work away, so it needs the shift key and shows you what you
+are about to lose before anything happens:
 
-- `P` runs `git fetch --prune --prune-tags --force`, then `git branch -D` on
-  every local branch whose upstream is gone. The checked-out branch and any
-  branch checked out in another worktree are left alone.
+- `Shift+p` runs `git fetch --prune --prune-tags --force`, then `git branch -D`
+  on every local branch whose upstream is gone, across as many repositories at
+  once as `concurrency` allows. The checked-out branch and any branch checked
+  out in another worktree are left alone.
 
 This is not undoable. Press `y` to go through with it; any other key cancels.
 
@@ -131,7 +137,7 @@ Everything is optional — with no config file, `gitdrift` scans `~/gitlab`.
 
 ## Pagers
 
-`D`, `L` and viewing a stash hand the terminal to a pager. gitdrift picks it
+`Shift+d`, `Shift+l` and viewing a stash hand the terminal to a pager. gitdrift picks it
 from `GIT_PAGER`, then `PAGER`, falling back to `less -R` — it does not use
 `core.pager`, because a global `core.pager=` (a deliberate "never page" for
 ordinary git use) would dump the output and return before the TUI had left

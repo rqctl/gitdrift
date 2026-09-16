@@ -11,8 +11,8 @@ prune_extra = []
 # Unset: $VISUAL, then $EDITOR, then vi.
 # editor = "nvim"
 
-# Simultaneous `git fetch` processes when fetching all repositories.
-fetch_concurrency = 16
+# Simultaneous git processes when fetching or pruning across repositories.
+concurrency = 16
 
 # Branch names treated as unremarkable. Anything else renders in bold so an
 # unusual checkout stands out.

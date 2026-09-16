@@ -216,14 +216,14 @@ fn event_loop(
             Command::Fetch(paths) => {
                 let targets = named(app, paths);
                 let job = app.begin_job("fetching", targets.len());
-                spawn_fetch(targets, cfg.fetch_concurrency, job, tx.clone());
+                spawn_fetch(targets, cfg.concurrency, job, tx.clone());
             }
             Command::FetchAll => {
                 let paths: Vec<PathBuf> = app.visible().iter().map(|r| r.path.clone()).collect();
                 let targets = named(app, paths);
                 let job = app.begin_job("fetching", targets.len());
                 ls.rescan_after = Some(job);
-                spawn_fetch(targets, cfg.fetch_concurrency, job, tx.clone());
+                spawn_fetch(targets, cfg.concurrency, job, tx.clone());
             }
             Command::Pull(paths) => {
                 // Refuse the un-pullable up front, so the user gets the specific
@@ -250,9 +250,10 @@ fn event_loop(
             Command::Prune(paths) => {
                 let targets = named(app, paths);
                 let job = app.begin_job("pruning", targets.len());
-                spawn_worktree_op(
+                spawn_concurrent_worktree_op(
                     targets,
                     actions::prune_gone_branches,
+                    cfg.concurrency,
                     "pruned",
                     job,
                     tx.clone(),
@@ -381,29 +382,54 @@ fn status_for(app: &App, path: &Path) -> Option<RepoStatus> {
         .map(|r| (*r).clone())
 }
 
-/// Run a worktree-mutating action over several repositories off the UI thread,
-/// re-inspecting each so the list reflects the result.
-fn spawn_worktree_op(
+/// Never more than `concurrency` at a time. Re-inspects each repository so
+/// the list reflects the result.
+fn spawn_concurrent_worktree_op(
     targets: Vec<(PathBuf, String)>,
     op: fn(&Path) -> Result<String, actions::ActionError>,
+    concurrency: usize,
     past_tense: &'static str,
     job: u64,
     tx: mpsc::Sender<Msg>,
 ) {
     std::thread::spawn(move || {
         let total = targets.len();
-        let mut failed = 0usize;
-        for (path, display_name) in &targets {
-            if op(path).is_err() {
-                failed += 1;
-            } else {
-                let _ = tx.send(Msg::Refresh(
-                    crate::status::inspect(path, display_name.clone()),
-                    String::new(),
-                ));
-            }
-            let _ = tx.send(Msg::JobStep(job));
+        let (work_tx, work_rx) = crossbeam_channel::unbounded::<(PathBuf, String)>();
+        for t in targets {
+            let _ = work_tx.send(t);
         }
+        drop(work_tx);
+
+        let failures = Arc::new(AtomicUsize::new(0));
+        let handles: Vec<_> = (0..concurrency.max(1))
+            .map(|_| {
+                let rx = work_rx.clone();
+                let tx = tx.clone();
+                let failures = Arc::clone(&failures);
+                std::thread::spawn(move || {
+                    for (path, name) in rx {
+                        match op(&path) {
+                            Ok(_) => {
+                                let _ = tx.send(Msg::Refresh(
+                                    status::inspect(&path, name),
+                                    String::new(),
+                                ));
+                            }
+                            Err(_) => {
+                                failures.fetch_add(1, Ordering::Relaxed);
+                            }
+                        }
+                        let _ = tx.send(Msg::JobStep(job));
+                    }
+                })
+            })
+            .collect();
+        drop(work_rx);
+        for h in handles {
+            let _ = h.join();
+        }
+
+        let failed = failures.load(Ordering::Relaxed);
         let text = if failed == 0 {
             format!("{past_tense} {total} repositories")
         } else {
@@ -469,58 +495,11 @@ fn spawn_detail(path: PathBuf, generation: u64, tx: mpsc::Sender<Msg>) {
     });
 }
 
-/// Never more than `concurrency` fetches at a time — 500 simultaneous SSH
-/// sessions would be worse than useless. Each repository is re-inspected as its fetch lands.
 fn spawn_fetch(
     targets: Vec<(PathBuf, String)>,
     concurrency: usize,
     job: u64,
     tx: mpsc::Sender<Msg>,
 ) {
-    std::thread::spawn(move || {
-        let total = targets.len();
-        let (work_tx, work_rx) = crossbeam_channel::unbounded::<(PathBuf, String)>();
-        for t in targets {
-            let _ = work_tx.send(t);
-        }
-        drop(work_tx);
-
-        let failures = Arc::new(AtomicUsize::new(0));
-        let handles: Vec<_> = (0..concurrency.max(1))
-            .map(|_| {
-                let rx = work_rx.clone();
-                let tx = tx.clone();
-                let failures = Arc::clone(&failures);
-                std::thread::spawn(move || {
-                    for (path, name) in rx {
-                        match actions::fetch(&path) {
-                            Ok(_) => {
-                                let _ = tx.send(Msg::Refresh(
-                                    status::inspect(&path, name),
-                                    String::new(),
-                                ));
-                            }
-                            Err(_) => {
-                                failures.fetch_add(1, Ordering::Relaxed);
-                            }
-                        }
-                        let _ = tx.send(Msg::JobStep(job));
-                    }
-                })
-            })
-            .collect();
-        drop(work_rx);
-        for h in handles {
-            let _ = h.join();
-        }
-
-        let failed = failures.load(Ordering::Relaxed);
-        let text = if failed == 0 {
-            format!("fetched {total} repositories")
-        } else {
-            format!("fetched {}/{total} ({failed} failed)", total - failed)
-        };
-        let _ = tx.send(Msg::ActionDone(text));
-        let _ = tx.send(Msg::JobEnd(job));
-    });
+    spawn_concurrent_worktree_op(targets, actions::fetch, concurrency, "fetched", job, tx);
 }
