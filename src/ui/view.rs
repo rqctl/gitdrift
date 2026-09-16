@@ -915,28 +915,28 @@ const HINTS: &[(&str, &str)] = &[
 ];
 
 /// Pinned at the end of the hints row; never dropped for width.
-const TAIL: &str = "? help  Esc quit";
+const TAIL: &str = "? help | Esc quit";
 
 /// As many labelled hints as fit. Help and quit are never dropped: a
 /// truncated row must still say how to get out and where the rest is.
 fn hints_line(width: usize) -> String {
-    const GAP: usize = 2;
+    const DELIM: &str = " | ";
     let mut out = String::new();
     let mut used = 0usize;
     for (key, label) in HINTS {
         let piece = format!("{key} {label}");
-        let extra = piece.chars().count() + if used == 0 { 0 } else { GAP };
-        if used + extra + GAP + TAIL.len() > width {
+        let extra = piece.chars().count() + if used == 0 { 0 } else { DELIM.len() };
+        if used + extra + DELIM.len() + TAIL.len() > width {
             break;
         }
         if used > 0 {
-            out.push_str("  ");
+            out.push_str(DELIM);
         }
         out.push_str(&piece);
         used += extra;
     }
     if used > 0 {
-        out.push_str("  ");
+        out.push_str(DELIM);
     }
     out.push_str(TAIL);
     out
@@ -1591,7 +1591,7 @@ mod tests {
             })
             .collect();
         let tail_keys = TAIL
-            .split("  ")
+            .split(" | ")
             .filter_map(|pair| pair.split_whitespace().next());
         let hint_keys = HINTS.iter().map(|(key, _)| *key);
         for key in hint_keys.chain(tail_keys) {
