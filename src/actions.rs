@@ -7,7 +7,6 @@ use crate::status::RepoStatus;
 pub enum ActionError {
     Dirty,
     NoUpstream,
-    NotFastForward,
     Git(String),
     Spawn(String),
 }
@@ -17,12 +16,6 @@ impl std::fmt::Display for ActionError {
         match self {
             ActionError::Dirty => write!(f, "worktree has uncommitted changes"),
             ActionError::NoUpstream => write!(f, "branch has no upstream"),
-            ActionError::NotFastForward => {
-                write!(
-                    f,
-                    "local and remote have diverged; pull would not fast-forward"
-                )
-            }
             ActionError::Git(msg) => write!(f, "git: {msg}"),
             ActionError::Spawn(msg) => write!(f, "{msg}"),
         }
@@ -31,16 +24,14 @@ impl std::fmt::Display for ActionError {
 
 impl std::error::Error for ActionError {}
 
-/// Judged from the last known status, not a fresh read; untracked files never block a fast-forward.
+/// Judged from the last known status; divergence is left to `pull` itself,
+/// which defers to the user's own `pull.rebase`/`pull.ff` config.
 pub fn can_pull(s: &RepoStatus) -> Result<(), ActionError> {
     if s.upstream.is_none() {
         return Err(ActionError::NoUpstream);
     }
     if s.is_dirty() {
         return Err(ActionError::Dirty);
-    }
-    if s.ahead > 0 && s.behind > 0 {
-        return Err(ActionError::NotFastForward);
     }
     Ok(())
 }
@@ -72,9 +63,11 @@ pub fn switch_branch(path: &Path, branch: &str) -> Result<String, ActionError> {
     run_git(path, &["switch", branch])
 }
 
-pub fn pull_ff(path: &Path, s: &RepoStatus) -> Result<String, ActionError> {
+/// Defers to the repository's own `pull.rebase`/`pull.ff` config, same as
+/// running `git pull` by hand — gitdrift does not force fast-forward-only.
+pub fn pull(path: &Path, s: &RepoStatus) -> Result<String, ActionError> {
     can_pull(s)?;
-    run_git(path, &["pull", "--ff-only", "--quiet"])
+    run_git(path, &["pull", "--quiet"])
 }
 
 /// Local branches in `git branch -vv` output whose upstream is gone.
@@ -107,6 +100,12 @@ pub fn gone_branches(listing: &str) -> Vec<String> {
 /// Irreversible: the caller must have confirmed with the user first. `-D`
 /// rather than `-d` because an upstream that is gone leaves git unable to
 /// prove the branch was merged.
+/// Irreversible, confirmed by the caller already. `-D` not `-d`: an unmerged
+/// branch must not silently block a delete the user already agreed to.
+pub fn delete_branch(path: &Path, branch: &str) -> Result<String, ActionError> {
+    run_git(path, &["branch", "-D", branch])
+}
+
 pub fn prune_gone_branches(path: &Path) -> Result<String, ActionError> {
     run_git(
         path,
@@ -175,6 +174,20 @@ fn run_git_interactive(path: &Path, args: &[&str]) -> Result<(), ActionError> {
 
 pub fn view_diff(path: &Path) -> Result<(), ActionError> {
     run_git_interactive(path, &["diff", "HEAD...@{u}"])
+}
+
+/// The diff an MR would show: everything on `target` since it forked from `base`.
+fn view_ref_diff(path: &Path, base: &str, target: &str) -> Result<(), ActionError> {
+    run_git_interactive(path, &["diff", &format!("{base}...{target}")])
+}
+
+pub fn view_ancestor_diff(path: &Path, base: &str) -> Result<(), ActionError> {
+    view_ref_diff(path, base, "HEAD")
+}
+
+/// Diffs a branch that need not be checked out — picked from the branch popover.
+pub fn view_branch_diff(path: &Path, base: &str, branch: &str) -> Result<(), ActionError> {
+    view_ref_diff(path, base, branch)
 }
 
 /// Two dots: the commits that are incoming, not a symmetric difference.

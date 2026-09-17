@@ -41,12 +41,13 @@ gitdrift --config PATH   # use a different config file
 | `Shift+v` | Sweep the last mark's state to the cursor |
 | `a` | Mark all visible, or clear the marks |
 | `f` / `Shift+f` | Fetch marked-or-current / fetch all |
-| `p` | `pull --ff-only`, marked-or-current |
+| `p` | `pull` (honours your `pull.rebase`/`pull.ff`), marked-or-current |
 | `Shift+p` | Prune gone branches — asks first |
 | `s` / `e` | Shell / editor in the repo |
 | `Shift+d` | Diff `HEAD...@{u}` in your pager |
 | `Shift+l` | Log of the incoming commits, in your pager |
-| `b` | Switch branch on the current repo |
+| `Shift+a` | Diff against the default branch, in your pager |
+| `b` | Browse branches: switch, diff against the default, delete — asks first |
 | `Shift+j` / `Shift+k` | Scroll the detail pane — the title shows `▴▾` while there is more |
 | `Shift+s` | Browse stashes: view in your pager, drop — asks first |
 | `x` | Drop the selected stash — stash pane only, asks first |
@@ -70,6 +71,12 @@ beats scrolling a few hundred rows. `o` changes the order: drift (the
 default), name, most recently committed, least recently fetched. The list
 pane's own title bar shows both.
 
+`b` opens a picker of the repository's local branches. `Enter` switches to
+the highlighted one; `d` diffs it against the default branch in your pager
+*without* checking it out — the popover stays open with the same branch
+highlighted once the pager exits, so you can diff, back out, and switch or
+delete right after without reopening it; `x` deletes it (asks first).
+
 The header at the top of the screen carries a colour-coded tally of what's
 drifted across the visible repositories (e.g. `↑3 ⊘2`, or `✔ all clean`),
 whatever's currently happening — a running job's spinner and progress, a
@@ -92,7 +99,9 @@ are about to lose before anything happens:
 This is not undoable. Press `y` to go through with it; any other key cancels.
 
 Dropping a stash with `x` (from the stash pane) asks the same way, for the
-same reason.
+same reason — and so does deleting a branch with `x` from the branch pane
+(`b`). The checked-out branch cannot be deleted this way; git would refuse
+regardless.
 
 ## Legend
 
@@ -137,7 +146,8 @@ Everything is optional — with no config file, `gitdrift` scans `~/gitlab`.
 
 ## Pagers
 
-`Shift+d`, `Shift+l` and viewing a stash hand the terminal to a pager. gitdrift picks it
+`Shift+d`, `Shift+l`, `Shift+a`, `d` in the branch popover, and viewing a
+stash all hand the terminal to a pager. gitdrift picks it
 from `GIT_PAGER`, then `PAGER`, falling back to `less -R` — it does not use
 `core.pager`, because a global `core.pager=` (a deliberate "never page" for
 ordinary git use) would dump the output and return before the TUI had left

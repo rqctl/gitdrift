@@ -25,10 +25,18 @@ pub enum Command {
     Editor(PathBuf),
     Diff(PathBuf),
     Log(PathBuf),
+    /// Diff against the repository's default branch, resolved by the caller
+    /// from the loaded detail — the state machine has no branch list of its own.
+    AncestorDiff(PathBuf),
     Rescan,
     LoadDetail(PathBuf),
     OpenBranches,
     Checkout(PathBuf, String),
+    /// Diff a branch from the picker against the default branch, without
+    /// checking it out first.
+    BranchDiff(PathBuf, String),
+    /// Only ever reached via a confirmation.
+    DeleteBranch(PathBuf, String),
     OpenStashes,
     ShowStash(PathBuf, usize),
     DropStash(PathBuf, usize),
@@ -41,6 +49,8 @@ pub struct Pending {
     pub targets: Vec<PathBuf>,
     /// The stash being dropped, for `Destructive::StashDrop` only.
     pub stash: Option<usize>,
+    /// The branch being deleted, for `Destructive::BranchDelete` only.
+    pub branch: Option<String>,
     /// What the user is about to lose, already counted up for display.
     pub summary: String,
 }
@@ -49,6 +59,7 @@ pub struct Pending {
 pub enum Destructive {
     Prune,
     StashDrop,
+    BranchDelete,
 }
 
 impl Destructive {
@@ -56,6 +67,7 @@ impl Destructive {
         match self {
             Destructive::Prune => "prune remotes and delete branches whose upstream is gone in",
             Destructive::StashDrop => "drop",
+            Destructive::BranchDelete => "delete branch",
         }
     }
 }
@@ -391,6 +403,17 @@ impl App {
         }
     }
 
+    /// Leaves the popover open: viewing a diff does not change anything about
+    /// the branch list, so there is nothing to re-pick when the pager returns.
+    fn diff_highlighted_branch(&self) -> Command {
+        let choice = self.branch_choices.get(self.picker_index()).cloned();
+        let repo = self.picker_repo.clone();
+        match (choice, repo) {
+            (Some(c), Some(p)) => Command::BranchDiff(p, c.name),
+            _ => Command::None,
+        }
+    }
+
     pub fn open_stash_picker(&mut self, repo: PathBuf, rows: Vec<StashChoice>) {
         if rows.is_empty() {
             self.set_toast("no stashes", Duration::from_secs(6));
@@ -419,10 +442,37 @@ impl App {
             kind: Destructive::StashDrop,
             targets: vec![path],
             stash: Some(choice.index),
+            branch: None,
             summary: format!(
                 "drop stash@{{{}}} in {scope} — \"{}\"",
                 choice.index, choice.message
             ),
+        });
+        self.pane = Pane::Confirm;
+        Command::None
+    }
+
+    /// The current branch is never offered here: it is filtered out of the
+    /// picker choice, since git refuses to delete a branch that is checked out.
+    fn confirm_branch_delete(&mut self) -> Command {
+        let (Some(choice), Some(path)) = (
+            self.branch_choices.get(self.picker_index()).cloned(),
+            self.picker_repo.clone(),
+        ) else {
+            return Command::None;
+        };
+        if choice.is_head {
+            self.set_toast("cannot delete the current branch", Duration::from_secs(6));
+            return Command::None;
+        }
+        let scope = self.display_name_of(&path);
+        self.close_picker();
+        self.pending = Some(Pending {
+            kind: Destructive::BranchDelete,
+            targets: vec![path],
+            stash: None,
+            branch: Some(choice.name.clone()),
+            summary: format!("delete branch {} in {scope}", choice.name),
         });
         self.pane = Pane::Confirm;
         Command::None
@@ -662,6 +712,7 @@ impl App {
             kind,
             targets,
             stash: None,
+            branch: None,
             summary: format!("{} {scope}", kind.verb()),
         });
         self.pane = Pane::Confirm;
@@ -789,6 +840,9 @@ impl App {
             KeyCode::Char('e') => self.selected_path().map_or(Command::None, Command::Editor),
             KeyCode::Char('D') => self.upstream_target().map_or(Command::None, Command::Diff),
             KeyCode::Char('L') => self.upstream_target().map_or(Command::None, Command::Log),
+            KeyCode::Char('A') => self
+                .selected_path()
+                .map_or(Command::None, Command::AncestorDiff),
             KeyCode::Char('b') => {
                 let dirty = self.selected().map(|r| r.is_dirty());
                 match dirty {
@@ -810,13 +864,16 @@ impl App {
             let pending = self.pending.take();
             self.pane = Pane::List;
             return match (confirmed, pending) {
-                (true, Some(p)) => match (p.kind, p.stash) {
-                    (Destructive::Prune, _) => Command::Prune(p.targets),
-                    (Destructive::StashDrop, Some(i)) => match p.targets.into_iter().next() {
-                        Some(path) => Command::DropStash(path, i),
-                        None => Command::None,
+                (true, Some(p)) => match p.kind {
+                    Destructive::Prune => Command::Prune(p.targets),
+                    Destructive::StashDrop => match (p.targets.into_iter().next(), p.stash) {
+                        (Some(path), Some(i)) => Command::DropStash(path, i),
+                        _ => Command::None,
                     },
-                    (Destructive::StashDrop, None) => Command::None,
+                    Destructive::BranchDelete => match (p.targets.into_iter().next(), p.branch) {
+                        (Some(path), Some(name)) => Command::DeleteBranch(path, name),
+                        _ => Command::None,
+                    },
                 },
                 _ => Command::None,
             };
@@ -858,6 +915,8 @@ impl App {
                     return Command::None;
                 }
                 KeyCode::Enter => return self.choose_branch(),
+                KeyCode::Char('d') => return self.diff_highlighted_branch(),
+                KeyCode::Char('x') => return self.confirm_branch_delete(),
                 KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('b') => {
                     self.close_picker();
                     return Command::None;
@@ -1837,6 +1896,128 @@ mod tests {
         app.on_key(code(KeyCode::Down));
         assert_eq!(app.on_key(code(KeyCode::Esc)), Command::None);
         assert_eq!(app.pane(), Pane::List);
+    }
+
+    #[test]
+    fn d_diffs_the_highlighted_branch_without_checking_it_out() {
+        let mut app = app_with(vec![row("a", 0)]);
+        let path = app.selected().unwrap().path.clone();
+        app.open_branch_picker(
+            path.clone(),
+            vec![branch("main", true), branch("feat/retries", false)],
+        );
+        app.on_key(code(KeyCode::Down));
+        assert_eq!(
+            app.on_key(key('d')),
+            Command::BranchDiff(path, "feat/retries".to_string())
+        );
+        assert_eq!(
+            app.pane(),
+            Pane::Branches,
+            "stays open so the pager can return to it"
+        );
+    }
+
+    #[test]
+    fn the_popover_still_works_normally_after_diffing_from_it() {
+        let mut app = app_with(vec![row("a", 0)]);
+        let path = app.selected().unwrap().path.clone();
+        app.open_branch_picker(
+            path.clone(),
+            vec![branch("main", true), branch("feat/retries", false)],
+        );
+        app.on_key(code(KeyCode::Down));
+        app.on_key(key('d'));
+        assert_eq!(app.picker_index(), 1, "the cursor stayed put");
+        assert_eq!(
+            app.on_key(code(KeyCode::Enter)),
+            Command::Checkout(path, "feat/retries".to_string()),
+            "the same branch is still selected"
+        );
+    }
+
+    #[test]
+    fn d_also_works_on_the_currently_checked_out_branch() {
+        let mut app = app_with(vec![row("a", 0)]);
+        let path = app.selected().unwrap().path.clone();
+        app.open_branch_picker(path.clone(), vec![branch("main", true)]);
+        assert_eq!(
+            app.on_key(key('d')),
+            Command::BranchDiff(path, "main".to_string())
+        );
+    }
+
+    #[test]
+    fn a_branch_diff_targets_the_repository_the_popover_listed() {
+        let mut app = app_with(vec![row("a", 0), row("b", 0)]);
+        let repo_a = app.visible()[0].path.clone();
+        app.open_branch_picker(
+            repo_a.clone(),
+            vec![branch("main", true), branch("feat/retries", false)],
+        );
+        slide_cursor_off(&mut app, &repo_a);
+        app.on_key(code(KeyCode::Down));
+        assert_eq!(
+            app.on_key(key('d')),
+            Command::BranchDiff(repo_a, "feat/retries".to_string())
+        );
+    }
+
+    #[test]
+    fn deleting_a_branch_asks_first() {
+        let mut app = app_with(vec![row("a", 0)]);
+        let path = app.selected().unwrap().path.clone();
+        app.open_branch_picker(
+            path.clone(),
+            vec![branch("main", true), branch("feat/retries", false)],
+        );
+        app.on_key(code(KeyCode::Down));
+        assert_eq!(app.on_key(key('x')), Command::None);
+        assert_eq!(app.pane(), Pane::Confirm);
+        let pending = app.pending().unwrap();
+        assert_eq!(pending.branch, Some("feat/retries".to_string()));
+        assert_eq!(
+            app.on_key(key('y')),
+            Command::DeleteBranch(path, "feat/retries".to_string())
+        );
+    }
+
+    #[test]
+    fn the_current_branch_cannot_be_deleted_from_the_picker() {
+        let mut app = app_with(vec![row("a", 0)]);
+        let path = app.selected().unwrap().path.clone();
+        app.open_branch_picker(path, vec![branch("main", true)]);
+        assert_eq!(app.on_key(key('x')), Command::None);
+        assert_eq!(app.pane(), Pane::Branches, "still open, nothing to confirm");
+        assert!(app.toast().unwrap().contains("current branch"));
+    }
+
+    #[test]
+    fn a_branch_delete_targets_the_repository_the_popover_listed() {
+        let mut app = app_with(vec![row("a", 0), row("b", 0)]);
+        let repo_a = app.visible()[0].path.clone();
+        app.open_branch_picker(
+            repo_a.clone(),
+            vec![branch("main", true), branch("feat/retries", false)],
+        );
+        slide_cursor_off(&mut app, &repo_a);
+        app.on_key(code(KeyCode::Down));
+        app.on_key(key('x'));
+        assert_eq!(
+            app.on_key(key('y')),
+            Command::DeleteBranch(repo_a, "feat/retries".to_string())
+        );
+    }
+
+    #[test]
+    fn shift_a_diffs_the_selected_repository_against_its_ancestor() {
+        let mut app = app_with(vec![row_no_upstream("a")]);
+        let path = app.selected().unwrap().path.clone();
+        assert_eq!(
+            app.on_key(KeyEvent::new(KeyCode::Char('A'), KeyModifiers::SHIFT)),
+            Command::AncestorDiff(path),
+            "no upstream is required, unlike D"
+        );
     }
 
     fn stash(index: usize, message: &str) -> StashChoice {

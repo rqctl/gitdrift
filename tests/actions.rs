@@ -1,7 +1,8 @@
 mod support;
 
 use gitdrift::actions::{
-    can_pull, drop_stash, fetch, pager, pull_ff, resolve_editor, switch_branch, ActionError,
+    can_pull, delete_branch, drop_stash, fetch, pager, pull, resolve_editor, switch_branch,
+    ActionError,
 };
 use gitdrift::status::{inspect, Head, RepoStatus};
 use support::TestRepo;
@@ -27,7 +28,7 @@ fn can_pull_refuses_a_dirty_worktree() {
 }
 
 #[test]
-fn can_pull_refuses_when_not_fast_forwardable() {
+fn can_pull_allows_a_diverged_repository() {
     let r = TestRepo::new();
     r.commit("a", "1", "one");
     let up = r.with_upstream();
@@ -41,7 +42,10 @@ fn can_pull_refuses_when_not_fast_forwardable() {
         (1, 1),
         "the fixture must actually diverge"
     );
-    assert!(matches!(can_pull(&s), Err(ActionError::NotFastForward)));
+    assert!(
+        can_pull(&s).is_ok(),
+        "divergence is left to the user's own pull.rebase/pull.ff config"
+    );
 }
 
 #[test]
@@ -96,7 +100,7 @@ fn fetch_updates_remote_tracking_refs() {
 }
 
 #[test]
-fn pull_ff_fast_forwards_and_clears_behind() {
+fn pull_fast_forwards_and_clears_behind() {
     let r = TestRepo::new();
     r.commit("a", "1", "one");
     let up = r.with_upstream();
@@ -106,10 +110,53 @@ fn pull_ff_fast_forwards_and_clears_behind() {
     let before = st(&r);
     assert_eq!(before.behind, 1);
 
-    pull_ff(r.path(), &before).unwrap();
+    pull(r.path(), &before).unwrap();
     let after = st(&r);
     assert_eq!(after.behind, 0);
     assert!(r.path().join("b").exists());
+}
+
+#[test]
+fn pull_rebases_a_diverged_branch_when_the_repo_is_configured_to() {
+    let r = TestRepo::new();
+    r.commit("a", "1", "one");
+    let up = r.with_upstream();
+    r.git(&["config", "pull.rebase", "true"]);
+    r.commit("b", "2", "local work");
+    let _clone = r.advance_upstream(&up, "c");
+    r.git(&["fetch", "-q", "origin"]);
+
+    let before = st(&r);
+    assert_eq!((before.ahead, before.behind), (1, 1));
+
+    pull(r.path(), &before).unwrap();
+    let after = st(&r);
+    assert_eq!(after.ahead, 1, "the local commit is replayed on top");
+    assert_eq!(after.behind, 0);
+    assert!(r.path().join("b").exists());
+    assert!(r.path().join("c").exists());
+}
+
+#[test]
+fn delete_branch_removes_it() {
+    let r = TestRepo::new();
+    r.commit("a", "1", "one");
+    r.git(&["branch", "other"]);
+    delete_branch(r.path(), "other").unwrap();
+    let out = r.git(&["branch", "--list", "other"]);
+    assert!(out.trim().is_empty());
+}
+
+#[test]
+fn delete_branch_forces_removal_of_an_unmerged_branch() {
+    let r = TestRepo::new();
+    r.commit("a", "1", "one");
+    r.git(&["checkout", "-qb", "other"]);
+    r.commit("b", "2", "unmerged work");
+    r.git(&["checkout", "-q", "main"]);
+    delete_branch(r.path(), "other").unwrap();
+    let out = r.git(&["branch", "--list", "other"]);
+    assert!(out.trim().is_empty());
 }
 
 #[test]

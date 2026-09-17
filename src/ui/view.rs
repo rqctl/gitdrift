@@ -786,7 +786,7 @@ fn draw_branches(frame: &mut Frame, app: &App, area: Rect) {
         "Switch branch",
         rows,
         app.picker_index(),
-        "↑↓ move   Enter switch   Esc close",
+        "↑↓ move   Enter switch   d diff   x delete   Esc close",
     );
 }
 
@@ -828,16 +828,30 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
             ("Shift+v", "Sweep the last mark's state to here"),
             ("a", "Mark all visible, or clear the marks"),
             ("f / Shift+f", "Fetch marked-or-current / fetch all"),
-            ("p", "Pull --ff-only, marked-or-current"),
+            (
+                "p",
+                "Pull (honours your pull.rebase config), marked-or-current",
+            ),
             ("Shift+p", "Prune gone branches (confirmed)"),
             ("s / e", "Shell / editor in repo"),
             ("Shift+d", "Diff HEAD...@{u} in your pager"),
             ("Shift+l", "Log of the incoming commits, in your pager"),
+            ("Shift+a", "Diff against the default branch, in your pager"),
             ("b", "Switch branch on the current repo"),
             ("Shift+s", "Browse stashes: view, drop"),
             ("r", "Rescan"),
             ("d", "Drifted only"),
             ("/", "Filter"),
+        ],
+    ),
+    (
+        "Branch popover",
+        &[
+            (
+                "d",
+                "Diff the highlighted branch against the default branch",
+            ),
+            ("x", "Delete the highlighted branch (confirmed)"),
         ],
     ),
     (
@@ -909,6 +923,7 @@ const HINTS: &[(&str, &str)] = &[
     ("Shift+p", "prune"),
     ("Shift+d", "diff"),
     ("Shift+l", "log"),
+    ("Shift+a", "ancestor diff"),
     ("b", "branch"),
     ("Shift+s", "stash"),
     ("/", "filter"),
@@ -1239,7 +1254,7 @@ mod tests {
         ));
         assert_eq!(app.pane(), Pane::Help);
         let out = render(120, 24, &app);
-        assert!(out.contains("ff-only"), "{out}");
+        assert!(out.contains("pull.rebase"), "{out}");
     }
 
     #[test]

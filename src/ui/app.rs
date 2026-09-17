@@ -284,6 +284,31 @@ fn event_loop(
                     app.set_toast(e.to_string(), TOAST_TTL);
                 }
             }
+            Command::AncestorDiff(path) => match ls.current_detail.as_ref() {
+                Some((p, d)) if *p == path => match default_branch_of(cfg, d) {
+                    Some(base) => {
+                        if let Err(e) = suspend(term, || actions::view_ancestor_diff(&path, &base))?
+                        {
+                            app.set_toast(e.to_string(), TOAST_TTL);
+                        }
+                    }
+                    None => app.set_toast(no_default_branch_toast(cfg), TOAST_TTL),
+                },
+                _ => app.set_toast("still loading…", TOAST_TTL),
+            },
+            Command::BranchDiff(path, branch) => match ls.current_detail.as_ref() {
+                Some((p, d)) if *p == path => match default_branch_of(cfg, d) {
+                    Some(base) => {
+                        if let Err(e) =
+                            suspend(term, || actions::view_branch_diff(&path, &base, &branch))?
+                        {
+                            app.set_toast(e.to_string(), TOAST_TTL);
+                        }
+                    }
+                    None => app.set_toast(no_default_branch_toast(cfg), TOAST_TTL),
+                },
+                _ => app.set_toast("still loading…", TOAST_TTL),
+            },
             // Detail is only ever shown, or acted on, for the row it belongs
             // to: it outlives a cursor move until the next Msg::Detail lands.
             Command::OpenBranches => match (app.selected(), ls.current_detail.as_ref()) {
@@ -345,6 +370,17 @@ fn event_loop(
                     let msg = match actions::drop_stash(&path, index) {
                         // git prints the dropped commit id; carrying it in the
                         // toast is the only way back, via `git stash store`.
+                        Ok(out) => Msg::Refresh(status::inspect(&path, name), out),
+                        Err(e) => Msg::ActionDone(format!("{name}: {e}")),
+                    };
+                    let _ = tx.send(msg);
+                });
+            }
+            Command::DeleteBranch(path, branch) => {
+                let name = display_name_of(app, &path);
+                let tx = tx.clone();
+                std::thread::spawn(move || {
+                    let msg = match actions::delete_branch(&path, &branch) {
                         Ok(out) => Msg::Refresh(status::inspect(&path, name), out),
                         Err(e) => Msg::ActionDone(format!("{name}: {e}")),
                     };
@@ -452,6 +488,21 @@ fn named(app: &App, paths: Vec<PathBuf>) -> Vec<(PathBuf, String)> {
         .collect()
 }
 
+/// The first of the configured default branches that actually exists locally.
+fn default_branch_of(cfg: &Config, detail: &RepoDetail) -> Option<String> {
+    cfg.default_branches
+        .iter()
+        .find(|name| detail.branches.iter().any(|b| &b.name == *name))
+        .cloned()
+}
+
+fn no_default_branch_toast(cfg: &Config) -> String {
+    format!(
+        "no default branch found locally ({})",
+        cfg.default_branches.join("/")
+    )
+}
+
 fn display_name_of(app: &App, path: &Path) -> String {
     app.visible()
         .iter()
@@ -477,7 +528,7 @@ fn spawn_scan(opts: ScanOptions, generation: u64, tx: mpsc::Sender<Msg>) {
 
 fn spawn_pull(path: PathBuf, sel: RepoStatus, tx: mpsc::Sender<Msg>) {
     std::thread::spawn(move || {
-        let msg = match actions::pull_ff(&path, &sel) {
+        let msg = match actions::pull(&path, &sel) {
             Ok(_) => {
                 let status = status::inspect(&path, sel.display_name.clone());
                 Msg::Refresh(status, format!("pulled {}", sel.display_name))
