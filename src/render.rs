@@ -60,20 +60,43 @@ pub fn elide(s: &str, width: usize) -> String {
         .collect()
 }
 
-/// Shorten `a/b/c/name` to `width` the way p10k shortens a prompt: leading
-/// segments stay, the middle collapses to `…`, and the final segment — the
-/// repository name, the part being looked for — is never truncated.
+/// Shortens the middle of a string, keeping both ends: `abcdefgh` at 5
+/// becomes `ab…gh`. Unlike `elide`, neither end is favoured — useful for a
+/// name where the distinguishing part could be at either end.
+pub fn middle_elide(s: &str, width: usize) -> String {
+    let chars: Vec<char> = s.chars().collect();
+    if chars.len() <= width {
+        return s.to_string();
+    }
+    if width == 0 {
+        return String::new();
+    }
+    if width == 1 {
+        return "…".to_string();
+    }
+    let keep = width - 1;
+    let head_len = keep.div_ceil(2);
+    let tail_len = keep - head_len;
+    let head: String = chars[..head_len].iter().collect();
+    let tail: String = chars[chars.len() - tail_len..].iter().collect();
+    format!("{head}…{tail}")
+}
+
+/// Shortens `a/b/c/name` to `width`, p10k-prompt style: never exceeds `width`.
 pub fn shorten_path(path: &str, width: usize) -> String {
     if path.chars().count() <= width {
         return path.to_string();
     }
     let Some((head, last)) = path.rsplit_once('/') else {
-        return elide(path, width);
+        return middle_elide(path, width);
     };
-    // Room for the name plus the "…/" standing in for what was dropped. If
-    // the name alone will not fit, it still wins: a truncated name is useless.
+    if last.chars().count() >= width {
+        return middle_elide(last, width);
+    }
+    // Room for the name plus the "…/" standing in for what was dropped.
     let Some(budget) = width.checked_sub(last.chars().count() + 2) else {
-        return format!("…/{last}");
+        // The name fits, but not alongside the "…/" marker in front of it.
+        return last.to_string();
     };
     let mut kept = String::new();
     for seg in head.split('/') {
@@ -84,6 +107,76 @@ pub fn shorten_path(path: &str, width: usize) -> String {
         kept.push('/');
     }
     format!("{kept}…/{last}")
+}
+
+pub const CURSOR_W: usize = 1;
+pub const MARK_W: usize = 2;
+pub const GAP_W: usize = 2;
+/// Branch names are shown whole. The cap only stops one pathological name
+/// from swallowing the row.
+pub const HEAD_MAX: usize = 60;
+pub const STATUS_MAX: usize = 40;
+pub const NAME_MIN: usize = 12;
+pub const BRANCH_HEADER: &str = "BRANCH";
+/// "#BR" reads as "branch count" at a glance without spelling out a word
+/// that would not fit the column.
+pub const BRANCHES_HEADER: &str = "#BR";
+
+/// Column widths for one frame; the name absorbs whatever the rest leave over.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Cols {
+    pub name: usize,
+    pub head: usize,
+    pub branches: usize,
+    /// The band under the selected row has to reach the far edge.
+    pub total: usize,
+}
+
+impl Cols {
+    pub fn measure(rows: &[&RepoStatus], inner_width: usize) -> Cols {
+        let natural_head = rows
+            .iter()
+            .map(|r| head_label(r).chars().count())
+            .max()
+            .unwrap_or(6)
+            .max(BRANCH_HEADER.chars().count());
+        let branches = rows
+            .iter()
+            .map(|r| branches_label(r).chars().count())
+            .max()
+            .unwrap_or(2)
+            .max(BRANCHES_HEADER.chars().count());
+        let status = rows
+            .iter()
+            .map(|r| status_width(r))
+            .max()
+            .unwrap_or(2)
+            .min(STATUS_MAX);
+        let longest = rows
+            .iter()
+            .map(|r| r.display_name.chars().count())
+            .max()
+            .unwrap_or(NAME_MIN);
+
+        // Branch, branch count and status get their full width; the name
+        // absorbs the rest and shortens its middle to fit.
+        let mut head = natural_head.clamp(1, HEAD_MAX);
+        let fixed = CURSOR_W + MARK_W + GAP_W + GAP_W + GAP_W + branches + status;
+        let mut name = longest.min(inner_width.saturating_sub(fixed + head));
+
+        if name < NAME_MIN {
+            // Too narrow to honour both. Give the name its floor out of the
+            // branch column, which then elides.
+            name = NAME_MIN.min(longest);
+            head = inner_width.saturating_sub(fixed + name).clamp(1, head);
+        }
+        Cols {
+            name,
+            head,
+            branches,
+            total: inner_width,
+        }
+    }
 }
 
 /// The width the status column occupies once rendered, trailing gap included.
@@ -185,18 +278,28 @@ mod tests {
     }
 
     #[test]
-    fn shorten_path_keeps_the_repository_name_even_when_it_alone_overflows() {
+    fn shorten_path_middle_elides_the_repository_name_when_it_alone_overflows() {
         use super::shorten_path;
+        let out = shorten_path("a/b/an-unusually-long-repository-name", 10);
         assert_eq!(
-            super::shorten_path("a/b/an-unusually-long-repository-name", 10),
-            "…/an-unusually-long-repository-name",
-            "a truncated name would be useless; overflow instead"
+            out.chars().count(),
+            10,
+            "overrunning width misaligns columns"
         );
-        assert_eq!(
-            shorten_path("no-slashes-at-all", 8),
-            "…-at-all",
-            "a path with no segments has nothing to collapse; elide it"
-        );
+        assert!(out.starts_with("an") && out.ends_with("name"), "{out}");
+
+        let out = shorten_path("no-slashes-at-all", 8);
+        assert_eq!(out.chars().count(), 8);
+        assert!(out.starts_with("no") && out.ends_with("all"), "{out}");
+    }
+
+    #[test]
+    fn middle_elide_keeps_both_ends_of_an_overlong_string() {
+        use super::middle_elide;
+        assert_eq!(middle_elide("short", 20), "short");
+        assert_eq!(middle_elide("abcdefgh", 5), "ab…gh");
+        assert_eq!(middle_elide("abcdefgh", 1), "…");
+        assert_eq!(middle_elide("abcdefgh", 0), "");
     }
 
     #[test]

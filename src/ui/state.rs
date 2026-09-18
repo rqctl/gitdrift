@@ -156,6 +156,8 @@ pub struct App {
     picker_repo: Option<PathBuf>,
     /// How far the detail pane is scrolled, in lines.
     pane_scroll: u16,
+    /// Flips the default visibility `view.rs` picks each frame.
+    detail_toggled: bool,
     /// The repository under the cursor when a scan began, restored after it finishes.
     pending_selection: Option<PathBuf>,
 }
@@ -190,6 +192,7 @@ impl App {
             stash_choices: Vec::new(),
             picker_repo: None,
             pane_scroll: 0,
+            detail_toggled: false,
             pending_selection: None,
             default_branches: crate::theme::DEFAULT_BRANCHES
                 .iter()
@@ -544,6 +547,16 @@ impl App {
         self.pane_scroll
     }
 
+    pub fn detail_toggled(&self) -> bool {
+        self.detail_toggled
+    }
+
+    /// Whether the detail pane/popover should be showing: shown by default
+    /// when the name fits (`fits`), hidden when it doesn't — flipped by `Tab`.
+    pub fn detail_open(&self, fits: bool) -> bool {
+        fits != self.detail_toggled
+    }
+
     /// Wheel over a scrollable pane.
     pub fn scroll_pane_by(&mut self, delta: i16) {
         self.scroll_pane(delta);
@@ -809,6 +822,10 @@ impl App {
                 Command::None
             }
             KeyCode::Char('r') => Command::Rescan,
+            KeyCode::Tab => {
+                self.detail_toggled = !self.detail_toggled;
+                Command::None
+            }
             KeyCode::Char('F') => Command::FetchAll,
             KeyCode::Char(' ') => {
                 self.toggle_mark();
@@ -1239,6 +1256,30 @@ mod tests {
             Command::None
         );
         assert!(app.toast().unwrap().contains("upstream"));
+    }
+
+    #[test]
+    fn tab_flips_the_detail_toggle_and_flips_back() {
+        let mut app = app_with(vec![row("a", 1)]);
+        assert!(!app.detail_toggled());
+        app.on_key(code(KeyCode::Tab));
+        assert!(app.detail_toggled());
+        app.on_key(code(KeyCode::Tab));
+        assert!(!app.detail_toggled());
+    }
+
+    #[test]
+    fn detail_open_follows_fit_unless_tab_flips_it() {
+        let mut app = app_with(vec![row("a", 1)]);
+        assert!(app.detail_open(true), "shown by default when it fits");
+        assert!(
+            !app.detail_open(false),
+            "hidden by default when it does not"
+        );
+
+        app.on_key(code(KeyCode::Tab));
+        assert!(!app.detail_open(true), "tab hides it despite fitting");
+        assert!(app.detail_open(false), "tab shows it despite not fitting");
     }
 
     #[test]

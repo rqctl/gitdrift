@@ -11,12 +11,14 @@ use ratatui::Frame;
 
 use crate::detail::{FileDelta, RepoDetail};
 use crate::drift;
-use crate::render::{branches_label, elide, head_label, shorten_path, status_cells, status_width};
+use crate::render::{
+    branches_label, elide, head_label, shorten_path, status_cells, Cols, BRANCHES_HEADER,
+    BRANCH_HEADER, CURSOR_W, MARK_W,
+};
 use crate::status::RepoStatus;
 use crate::theme::{self, Facet};
 use crate::ui::state::{App, Job, Pane};
 
-const DETAIL_MIN_WIDTH: u16 = 100;
 /// 3 content rows (drift tally, activity, hints) plus the block's own border.
 const HEADER_HEIGHT: u16 = 5;
 
@@ -92,81 +94,10 @@ fn pad_to(spans: &mut Vec<Span<'static>>, used: usize, width: usize) {
     }
 }
 
-/// Column widths for one frame, sized so the status column always lands on
-/// screen: the name is elided to whatever is left over, never the reverse.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct Cols {
-    name: usize,
-    head: usize,
-    branches: usize,
-    /// The band under the selected row has to reach the far edge.
-    total: usize,
-}
-
-const CURSOR_W: usize = 1;
-const MARK_W: usize = 2;
-const GAP_W: usize = 2;
-/// Branch names are shown whole. The cap only stops one pathological name
-/// from swallowing the row.
-const HEAD_MAX: usize = 60;
-const STATUS_MAX: usize = 40;
-const NAME_MIN: usize = 12;
+const NAME_HEADER: &str = "NAME";
 /// Widest the incoming +/- bar is allowed to get.
 const BAR_MAX: usize = 24;
-
-const NAME_HEADER: &str = "NAME";
-const BRANCH_HEADER: &str = "BRANCH";
-/// "#BR" reads as "branch count" at a glance without spelling out a word
-/// that would not fit the column.
-const BRANCHES_HEADER: &str = "#BR";
 const DRIFT_HEADER: &str = "DRIFT";
-
-impl Cols {
-    fn measure(rows: &[&RepoStatus], inner_width: usize) -> Cols {
-        let natural_head = rows
-            .iter()
-            .map(|r| head_label(r).chars().count())
-            .max()
-            .unwrap_or(6)
-            .max(BRANCH_HEADER.chars().count());
-        let branches = rows
-            .iter()
-            .map(|r| branches_label(r).chars().count())
-            .max()
-            .unwrap_or(2)
-            .max(BRANCHES_HEADER.chars().count());
-        let status = rows
-            .iter()
-            .map(|r| status_width(r))
-            .max()
-            .unwrap_or(2)
-            .min(STATUS_MAX);
-        let longest = rows
-            .iter()
-            .map(|r| r.display_name.chars().count())
-            .max()
-            .unwrap_or(NAME_MIN);
-
-        // Branch, branch count and status get their full width; the name
-        // absorbs the rest and shortens its middle to fit.
-        let mut head = natural_head.clamp(1, HEAD_MAX);
-        let fixed = CURSOR_W + MARK_W + GAP_W + GAP_W + GAP_W + branches + status;
-        let mut name = longest.min(inner_width.saturating_sub(fixed + head));
-
-        if name < NAME_MIN {
-            // Too narrow to honour both. Give the name its floor out of the
-            // branch column, which then elides.
-            name = NAME_MIN.min(longest);
-            head = inner_width.saturating_sub(fixed + name).clamp(1, head);
-        }
-        Cols {
-            name,
-            head,
-            branches,
-            total: inner_width,
-        }
-    }
-}
 
 /// A gutter bar, not an inverted row: reversing a line would destroy the
 /// status colours. The glyph carries the cursor where the band cannot.
@@ -260,6 +191,31 @@ pub struct Rendered {
     pub pane_max_scroll: u16,
 }
 
+/// Whether the side pane, at `total_width`, would show every visible
+/// repository's name whole rather than middle-eliding it.
+fn side_pane_fits(app: &App, total_width: u16) -> bool {
+    let visible = app.visible();
+    if visible.is_empty() {
+        return true;
+    }
+    let candidate = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
+        .split(Rect::new(0, 0, total_width, 1))[0];
+    // Two border columns plus the block's own horizontal padding.
+    let inner = candidate.width.saturating_sub(4) as usize;
+    let cols = Cols::measure(&visible, inner);
+    // `shorten_path` collapses the namespace first; only the repository
+    // name itself — the last segment — ever gets middle-elided.
+    visible.iter().all(|r| {
+        let name = r
+            .display_name
+            .rsplit_once('/')
+            .map_or(r.display_name.as_str(), |(_, n)| n);
+        name.chars().count() <= cols.name
+    })
+}
+
 pub fn draw(
     frame: &mut Frame,
     app: &App,
@@ -274,8 +230,11 @@ pub fn draw(
 
     draw_header(frame, app, rows[0]);
 
-    let show_detail = area.width >= DETAIL_MIN_WIDTH && app.pane() == Pane::List;
-    let body = if show_detail {
+    let wide_fits = side_pane_fits(app, area.width);
+    let detail_open = app.pane() == Pane::List && app.detail_open(wide_fits);
+    let show_detail_side = detail_open && wide_fits;
+    let show_detail_full = detail_open && !show_detail_side;
+    let body = if show_detail_side {
         Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
@@ -309,14 +268,24 @@ pub fn draw(
             draw_sort(frame, app, body[0]);
         }
         Pane::List => {
-            draw_list(frame, app, body[0], list_state);
-            if show_detail {
-                max_scroll = draw_detail(frame, app, detail, body[1]);
+            if show_detail_full {
+                max_scroll = draw_detail(frame, app, detail, body[0]);
+            } else {
+                draw_list(frame, app, body[0], list_state);
+                if show_detail_side {
+                    max_scroll = draw_detail(frame, app, detail, body[1]);
+                }
             }
         }
     }
     Rendered {
-        detail_area: show_detail.then(|| body[1]),
+        detail_area: if show_detail_side {
+            Some(body[1])
+        } else if show_detail_full {
+            Some(body[0])
+        } else {
+            None
+        },
         pane_max_scroll: max_scroll,
     }
 }
@@ -955,6 +924,10 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
                 "wheel",
                 "Scroll the detail under the pointer, else the list",
             ),
+            (
+                "Tab",
+                "Show/hide it: beside the list when every name fits there, full-screen otherwise",
+            ),
         ],
     ),
     (
@@ -1021,6 +994,7 @@ const HINTS: &[(&str, &str)] = &[
     ("n", "namespace"),
     ("Shift+s", "sort"),
     ("/", "filter"),
+    ("Tab", "detail"),
 ];
 
 /// Pinned at the end of the hints row; never dropped for width.
@@ -1241,17 +1215,61 @@ mod tests {
     }
 
     #[test]
-    fn narrow_terminals_drop_the_detail_pane_rather_than_squashing_it() {
-        let app = app_with(vec![row("sre/alpha", 1)]);
-        let wide = render(120, 20, &app);
-        let narrow = render(70, 20, &app);
+    fn a_repository_name_too_long_for_the_side_pane_drops_it_rather_than_squashing_it() {
+        let fits = app_with(vec![row("sre/alpha", 1)]);
+        let truncates = app_with(vec![row(&"x".repeat(200), 1)]);
+        let short = render(260, 20, &fits);
+        let long = render(260, 20, &truncates);
         assert!(
-            wide.contains("Detail"),
-            "wide layout should show the detail pane:\n{wide}"
+            short.contains("Detail"),
+            "a name that fits gets the side pane:\n{short}"
         );
         assert!(
-            !narrow.contains("Detail"),
-            "narrow layout should hide it:\n{narrow}"
+            !long.contains("Detail"),
+            "a name too long for it drops to standard instead:\n{long}"
+        );
+    }
+
+    #[test]
+    fn a_long_namespace_does_not_force_standard_when_the_repository_name_itself_is_short() {
+        // shorten_path collapses the namespace before ever touching the name;
+        // only the name's own length should decide the mode.
+        let deep = "idp/developer-control-plane/workflow-automation-n8n/unified-content-review-training-dataset/short-name";
+        let app = app_with(vec![row(deep, 1)]);
+        let out = render(260, 20, &app);
+        assert!(
+            out.contains("Detail"),
+            "the path is long, the name is not:\n{out}"
+        );
+    }
+
+    #[test]
+    fn tab_hides_the_side_pane_when_a_name_fits() {
+        let mut app = app_with(vec![row("sre/alpha", 1)]);
+        app.on_key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Tab,
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        let out = render(260, 20, &app);
+        assert!(!out.contains("Detail"), "{out}");
+        assert!(
+            out.contains("repositories"),
+            "the list still fills the screen:\n{out}"
+        );
+    }
+
+    #[test]
+    fn tab_opens_the_detail_full_screen_when_a_name_does_not_fit() {
+        let mut app = app_with(vec![row(&"x".repeat(200), 1)]);
+        app.on_key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Tab,
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        let out = render(260, 20, &app);
+        assert!(out.contains("Detail"), "{out}");
+        assert!(
+            !out.contains("repositories"),
+            "it replaces the list, it does not float over it:\n{out}"
         );
     }
 
@@ -1261,6 +1279,7 @@ mod tests {
         let out = render(120, 20, &app);
         assert!(out.contains("move"), "{out}");
         assert!(out.contains("quit"), "{out}");
+        assert!(out.contains("Tab detail"), "{out}");
     }
 
     #[test]
@@ -1452,7 +1471,7 @@ mod tests {
     }
 
     fn render_detail(height: u16, app: &App, d: &RepoDetail) -> (Rendered, String) {
-        let mut term = Terminal::new(TestBackend::new(120, height)).unwrap();
+        let mut term = Terminal::new(TestBackend::new(260, height)).unwrap();
         let mut state = ListState::default();
         let mut rendered = Rendered::default();
         term.draw(|f| rendered = draw(f, app, Some(d), &mut state))
@@ -1693,7 +1712,7 @@ mod tests {
             }),
             ..RepoDetail::default()
         };
-        let mut term = Terminal::new(TestBackend::new(140, 30)).unwrap();
+        let mut term = Terminal::new(TestBackend::new(260, 30)).unwrap();
         let mut state = ListState::default();
         term.draw(|f| {
             draw(f, &app, Some(&detail), &mut state);

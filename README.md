@@ -63,6 +63,14 @@ toast, or the filter you're typing — and the keybinding hints.
 nothing left to close. The help and problems panes scroll with `↑`/`↓`,
 `PgUp`/`PgDn` or the wheel when they outgrow the terminal.
 
+## Detail pane
+
+`Tab` shows or hides the detail pane for the selected repository. Where it
+appears depends on whether the repository's name fits next to the list at
+the terminal's current width: if it does, the detail pane sits beside the
+list; if showing it there would require shortening the name, it instead
+takes over the full screen, and the list is one more `Tab` away.
+
 ## Destroying work
 
 `Shift+x` throws work away, so it needs the shift key and shows you what you
