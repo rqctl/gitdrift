@@ -1,6 +1,11 @@
 use crate::status::{Head, RepoStatus};
 use crate::theme::{self, Facet, BOLD, RESET};
 
+/// No glyph: the column header already says what this number counts.
+pub fn branches_label(s: &RepoStatus) -> String {
+    s.local_branches.to_string()
+}
+
 /// The counter column: one cell per present state, in a fixed order so the
 /// eye learns the positions.
 pub fn status_cells(s: &RepoStatus) -> Vec<(Facet, String)> {
@@ -121,7 +126,7 @@ pub fn plain(rows: &[RepoStatus], colorize: bool) -> String {
         .min(30);
     let branches_w = rows
         .iter()
-        .map(|r| format!("⎇{}", r.local_branches).chars().count())
+        .map(|r| branches_label(r).chars().count())
         .max()
         .unwrap_or(2);
 
@@ -135,7 +140,7 @@ pub fn plain(rows: &[RepoStatus], colorize: bool) -> String {
         out.push_str("  ");
         out.push_str(&pad(&head_label(r), head_w));
         out.push_str("  ");
-        out.push_str(&pad(&format!("⎇{}", r.local_branches), branches_w));
+        out.push_str(&pad(&branches_label(r), branches_w));
         out.push_str("  ");
         let cells: Vec<String> = status_cells(r)
             .into_iter()

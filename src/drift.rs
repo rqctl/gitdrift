@@ -51,7 +51,7 @@ pub fn is_drifted(s: &RepoStatus) -> bool {
     score(s) > 0
 }
 
-/// How the list is ordered. Cycled with `o`.
+/// How the list is ordered, picked from the popover opened with `Shift+s`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Sort {
     #[default]
@@ -63,6 +63,14 @@ pub enum Sort {
 }
 
 impl Sort {
+    pub const ALL: [Sort; 5] = [
+        Sort::Drift,
+        Sort::Name,
+        Sort::Recent,
+        Sort::Stale,
+        Sort::Branches,
+    ];
+
     pub fn label(self) -> &'static str {
         match self {
             Sort::Drift => "drift",
@@ -70,16 +78,6 @@ impl Sort {
             Sort::Recent => "recently committed",
             Sort::Stale => "least recently fetched",
             Sort::Branches => "most local branches",
-        }
-    }
-
-    pub fn next(self) -> Sort {
-        match self {
-            Sort::Drift => Sort::Name,
-            Sort::Name => Sort::Recent,
-            Sort::Recent => Sort::Stale,
-            Sort::Stale => Sort::Branches,
-            Sort::Branches => Sort::Drift,
         }
     }
 }

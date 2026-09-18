@@ -55,7 +55,7 @@ there is a test enforcing glyph uniqueness — and the selection cursor is a
 gutter bar plus bold, never an inverted row.
 
 **Destructive actions go through the confirm pane** and only lowercase `y`
-proceeds. Today that is `P` (prune) and `x` (drop a stash).
+proceeds. Today that is `Shift+x` (prune) and `x` (drop a stash).
 
 **Popovers carry their own repository path.** `App::picker_repo` exists
 because `LoopState::current_detail` is not cleared on cursor move: between a

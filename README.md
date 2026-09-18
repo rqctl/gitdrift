@@ -5,7 +5,7 @@ stashed, conflicted — across a tree of hundreds of them.
 
 ## Install
 
-Needs Rust 1.85 or newer and the `git` binary on `PATH` — gitdrift reads with
+Needs Rust 1.98 or newer and the `git` binary on `PATH` — gitdrift reads with
 `gix`, but every action it takes shells out to `git` so your SSH keys,
 credential helpers and `insteadOf` rules keep working.
 
@@ -34,7 +34,7 @@ gitdrift --init-config   # write a commented example config, unless one exists
 
 Press `?` once the TUI is open for the full, sectioned list of keybindings.
 
-`Space` marks rows; `f`, `p` and `Shift+p` then act on every marked
+`Space` marks rows; `f`, `p` and `Shift+x` then act on every marked
 repository instead of the one under the cursor. `Shift+v` marks everything between the last
 mark and the cursor, and `a` marks the whole visible list — or clears the
 marks, if there are any. Marks survive a rescan, and only ever apply to
@@ -43,9 +43,10 @@ action too, and gitdrift says so rather than quietly doing nothing.
 
 `n` opens a picker listing every top-level namespace (`idp`, `mkp`, `aws`, …)
 with its repository count, plus "all". Pick one with `↑`/`↓` and `Enter`; it
-beats scrolling a few hundred rows. `o` changes the order: drift (the
-default), name, most recently committed, least recently fetched, most local
-branches. The list pane's own title bar shows both.
+beats scrolling a few hundred rows. `Shift+s` opens the same kind of picker
+for sort order: drift (the default), name, most recently committed, least
+recently fetched, most local branches. The list pane's own title bar shows
+both.
 
 `b` opens a picker of the repository's local branches. `Enter` switches to
 the highlighted one; `d` diffs it against the default branch in your pager
@@ -64,10 +65,10 @@ nothing left to close. The help and problems panes scroll with `↑`/`↓`,
 
 ## Destroying work
 
-`Shift+p` throws work away, so it needs the shift key and shows you what you
+`Shift+x` throws work away, so it needs the shift key and shows you what you
 are about to lose before anything happens:
 
-- `Shift+p` runs `git fetch --prune --prune-tags --force`, then `git branch -D`
+- `Shift+x` runs `git fetch --prune --prune-tags --force`, then `git branch -D`
   on every local branch whose upstream is gone, across as many repositories at
   once as `concurrency` allows. The checked-out branch and any branch checked
   out in another worktree are left alone.
@@ -91,7 +92,6 @@ regardless.
 | `●N` | unstaged changes |
 | `?N` | untracked files |
 | `⚑N` | stashes |
-| `⎇N` | local branches |
 | `⌀` | detached HEAD |
 | `⊘` | no upstream |
 | `✔` | clean and in sync |
@@ -125,7 +125,7 @@ and an example — everything is optional, and with no config file at all,
 
 ## Pagers
 
-`Shift+d`, `Shift+l`, `Shift+a`, `d` in the branch popover, and viewing a
+`Shift+u`, `Shift+l`, `Shift+m`, `d` in the branch popover, and viewing a
 stash all hand the terminal to a pager. gitdrift picks it
 from `GIT_PAGER`, then `PAGER`, falling back to `less -R` — it does not use
 `core.pager`, because a global `core.pager=` (a deliberate "never page" for

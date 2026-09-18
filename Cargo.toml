@@ -2,7 +2,7 @@
 name = "gitdrift"
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.85"
+rust-version = "1.98"
 description = "Find git repositories that have drifted: unpushed, unpulled, dirty or stashed"
 license = "MIT"
 

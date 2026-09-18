@@ -10,7 +10,8 @@ use ratatui::widgets::{
 use ratatui::Frame;
 
 use crate::detail::{FileDelta, RepoDetail};
-use crate::render::{elide, head_label, shorten_path, status_cells, status_width};
+use crate::drift;
+use crate::render::{branches_label, elide, head_label, shorten_path, status_cells, status_width};
 use crate::status::RepoStatus;
 use crate::theme::{self, Facet};
 use crate::ui::state::{App, Job, Pane};
@@ -112,12 +113,13 @@ const STATUS_MAX: usize = 40;
 const NAME_MIN: usize = 12;
 /// Widest the incoming +/- bar is allowed to get.
 const BAR_MAX: usize = 24;
-/// Glyph for the local-branch-count column.
-const BRANCHES_GLYPH: char = '⎇';
 
-fn branches_label(s: &RepoStatus) -> String {
-    format!("{BRANCHES_GLYPH}{}", s.local_branches)
-}
+const NAME_HEADER: &str = "NAME";
+const BRANCH_HEADER: &str = "BRANCH";
+/// "#BR" reads as "branch count" at a glance without spelling out a word
+/// that would not fit the column.
+const BRANCHES_HEADER: &str = "#BR";
+const DRIFT_HEADER: &str = "DRIFT";
 
 impl Cols {
     fn measure(rows: &[&RepoStatus], inner_width: usize) -> Cols {
@@ -125,12 +127,14 @@ impl Cols {
             .iter()
             .map(|r| head_label(r).chars().count())
             .max()
-            .unwrap_or(6);
+            .unwrap_or(6)
+            .max(BRANCH_HEADER.chars().count());
         let branches = rows
             .iter()
             .map(|r| branches_label(r).chars().count())
             .max()
-            .unwrap_or(2);
+            .unwrap_or(2)
+            .max(BRANCHES_HEADER.chars().count());
         let status = rows
             .iter()
             .map(|r| status_width(r))
@@ -300,6 +304,10 @@ pub fn draw(
             draw_list(frame, app, body[0], list_state);
             draw_stashes(frame, app, body[0]);
         }
+        Pane::Sort => {
+            draw_list(frame, app, body[0], list_state);
+            draw_sort(frame, app, body[0]);
+        }
         Pane::List => {
             draw_list(frame, app, body[0], list_state);
             if show_detail {
@@ -340,8 +348,15 @@ fn draw_list(frame: &mut Frame, app: &App, area: Rect, state: &mut ListState) {
         return;
     }
 
-    // Two border columns and the block's one-column padding on each side.
-    let cols = Cols::measure(&visible, area.width.saturating_sub(4) as usize);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Min(0)])
+        .split(inner);
+
+    let cols = Cols::measure(&visible, inner.width as usize);
+    frame.render_widget(Paragraph::new(header_line(cols)), rows[0]);
 
     let selected = app.selected_index();
     let items: Vec<ListItem> = visible
@@ -359,9 +374,30 @@ fn draw_list(frame: &mut Frame, app: &App, area: Rect, state: &mut ListState) {
         .collect();
     // The band is painted into the row itself so it can lift the dim spans;
     // the widget's own highlight would only fight it.
-    let list = List::new(items).block(block);
+    let list = List::new(items);
     state.select(Some(app.selected_index()));
-    frame.render_stateful_widget(list, area, state);
+    frame.render_stateful_widget(list, rows[1], state);
+}
+
+/// Column labels above the list, aligned with `row_line`'s own columns.
+fn header_line(cols: Cols) -> Line<'static> {
+    let style = Style::default()
+        .fg(theme::Color::Yellow.to_ratatui())
+        .add_modifier(Modifier::BOLD);
+    let mut spans = vec![Span::raw(" ".repeat(CURSOR_W + MARK_W))];
+
+    let mut push = |label: &'static str, width: usize| {
+        let used = label.chars().count();
+        spans.push(Span::styled(label, style));
+        pad_to(&mut spans, used, width);
+        spans.push(Span::raw("  "));
+    };
+    push(NAME_HEADER, cols.name);
+    push(BRANCH_HEADER, cols.head);
+    push(BRANCHES_HEADER, cols.branches);
+    spans.push(Span::styled(DRIFT_HEADER, style));
+
+    Line::from(spans)
 }
 
 /// Renders a paragraph that may be taller than its pane, and reports how far
@@ -764,6 +800,32 @@ fn draw_namespaces(frame: &mut Frame, app: &App, area: Rect) {
     );
 }
 
+fn draw_sort(frame: &mut Frame, app: &App, area: Rect) {
+    let rows: Vec<Line<'static>> = drift::Sort::ALL
+        .iter()
+        .map(|s| {
+            let active = *s == app.sort_mode();
+            let mut style = Style::default().add_modifier(Modifier::BOLD);
+            if active {
+                style = style.fg(theme::Color::Accent.to_ratatui());
+            }
+            Line::from(vec![
+                Span::styled(if active { "● " } else { "  " }, accent()),
+                Span::styled(s.label().to_string(), style),
+            ])
+        })
+        .collect();
+
+    draw_picker(
+        frame,
+        area,
+        "Sort by",
+        rows,
+        app.picker_index(),
+        "↑↓ move   Enter choose   Esc close",
+    );
+}
+
 fn draw_branches(frame: &mut Frame, app: &App, area: Rect) {
     let name_w = app
         .branch_choices()
@@ -842,7 +904,10 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
             ("↑↓ PgUp PgDn", "Move"),
             ("g / Shift+g", "First / last"),
             ("n", "Filter by namespace"),
-            ("o", "Cycle sort: drift, name, recent, stale, branches"),
+            (
+                "Shift+s",
+                "Open the sort picker: drift, name, recent, stale, branches",
+            ),
             ("d", "Drifted only"),
             ("/", "Filter"),
         ],
@@ -858,13 +923,13 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
                 "p",
                 "Pull (honours your pull.rebase config), marked-or-current",
             ),
-            ("Shift+p", "Prune gone branches (confirmed)"),
-            ("s / e", "Shell / editor in repo"),
-            ("Shift+d", "Diff HEAD...@{u} in your pager"),
+            ("Shift+x", "Prune gone branches (confirmed)"),
+            ("Enter / e", "Shell / editor in repo"),
+            ("Shift+u", "Diff HEAD...@{u} in your pager"),
             ("Shift+l", "Log of the incoming commits, in your pager"),
-            ("Shift+a", "Diff against the default branch, in your pager"),
+            ("Shift+m", "Diff against the default branch, in your pager"),
             ("b", "Switch branch on the current repo"),
-            ("Shift+s", "Browse stashes: view, drop"),
+            ("s", "Browse stashes: view, drop"),
             ("r", "Rescan"),
         ],
     ),
@@ -954,7 +1019,7 @@ fn draw_help(frame: &mut Frame, app: &App, area: Rect) -> u16 {
 const HINTS: &[(&str, &str)] = &[
     ("↑↓", "move"),
     ("n", "namespace"),
-    ("o", "sort"),
+    ("Shift+s", "sort"),
     ("/", "filter"),
 ];
 
@@ -1155,6 +1220,27 @@ mod tests {
     }
 
     #[test]
+    fn the_list_pane_has_a_column_header_above_the_rows() {
+        let app = app_with(vec![row("sre/alpha", 1)]);
+        let out = render(120, 20, &app);
+        assert!(out.contains("NAME"), "{out}");
+        assert!(out.contains("BRANCH"), "{out}");
+        assert!(out.contains("#BR"), "{out}");
+        assert!(out.contains("DRIFT"), "{out}");
+        let header_row = out.lines().position(|l| l.contains("NAME")).unwrap();
+        // "sre/alpha" alone also matches the detail pane's title; "main" (its
+        // branch) only appears on the list row itself.
+        let repo_row = out
+            .lines()
+            .position(|l| l.contains("sre/alpha") && l.contains("main"))
+            .unwrap();
+        assert!(
+            header_row < repo_row,
+            "the header sits above the rows\n{out}"
+        );
+    }
+
+    #[test]
     fn narrow_terminals_drop_the_detail_pane_rather_than_squashing_it() {
         let app = app_with(vec![row("sre/alpha", 1)]);
         let wide = render(120, 20, &app);
@@ -1329,7 +1415,7 @@ mod tests {
     fn the_confirm_pane_names_the_action_and_warns_it_is_final() {
         let mut app = app_with(vec![row("sre/alpha", 1)]);
         app.on_key(crossterm::event::KeyEvent::new(
-            crossterm::event::KeyCode::Char('P'),
+            crossterm::event::KeyCode::Char('X'),
             crossterm::event::KeyModifiers::NONE,
         ));
         let out = render(120, 24, &app);
@@ -1435,19 +1521,23 @@ mod tests {
         let app = app_with(vec![row("a", 1), row("b", 1)]);
         let mut term = Terminal::new(TestBackend::new(120, 20)).unwrap();
         let mut state = ListState::default();
+        let mut rendered = Rendered::default();
         term.draw(|f| {
-            draw(f, &app, None, &mut state);
+            rendered = draw(f, &app, None, &mut state);
         })
         .unwrap();
         let buf = term.backend().buffer();
+        // Bound checks to the list pane's own columns: the detail pane next
+        // to it renders independently and may carry dim text of its own.
+        let list_width = rendered.detail_area.map_or(buf.area.width, |r| r.x);
 
         let bars: Vec<u16> = (0..buf.area.height)
-            .filter(|y| (0..buf.area.width).any(|x| buf[(x, *y)].symbol() == "▌"))
+            .filter(|y| (0..list_width).any(|x| buf[(x, *y)].symbol() == "▌"))
             .collect();
         assert_eq!(bars.len(), 1, "exactly one row carries the cursor");
 
         let y = bars[0];
-        for x in 0..buf.area.width {
+        for x in 0..list_width {
             let cell = &buf[(x, y)];
             assert!(
                 !cell.modifier.contains(Modifier::REVERSED),
@@ -1463,10 +1553,10 @@ mod tests {
             );
         }
         assert!(
-            (0..buf.area.width).all(|x| buf[(x, y)].fg != theme::Color::Dim.to_ratatui()),
+            (0..list_width).all(|x| buf[(x, y)].fg != theme::Color::Dim.to_ratatui()),
             "dim text would vanish into the band"
         );
-        let ahead = (0..buf.area.width)
+        let ahead = (0..list_width)
             .map(|x| &buf[(x, y)])
             .find(|c| c.symbol() == "↑")
             .expect("the ahead glyph is on the selected row");

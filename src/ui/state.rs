@@ -91,6 +91,7 @@ pub enum Pane {
     Namespaces,
     Branches,
     Stashes,
+    Sort,
 }
 
 /// One row of the branch picker. Built by the event loop from the loaded
@@ -374,6 +375,25 @@ impl App {
             Some((name, _)) if index > 0 => Some(name.clone()),
             _ => None,
         };
+        self.close_picker();
+        self.selected = 0;
+        self.anchor = None;
+        self.clamp_selection();
+        self.detail_command()
+    }
+
+    fn open_sort(&mut self) {
+        let at = drift::Sort::ALL
+            .iter()
+            .position(|s| *s == self.sort)
+            .unwrap_or(0);
+        self.picker = Some(Picker::open(drift::Sort::ALL.len(), at));
+        self.pane = Pane::Sort;
+    }
+
+    fn choose_sort(&mut self) -> Command {
+        self.sort = drift::Sort::ALL[self.picker_index()];
+        drift::sort_by(&mut self.rows, self.sort);
         self.close_picker();
         self.selected = 0;
         self.anchor = None;
@@ -814,14 +834,10 @@ impl App {
                 self.open_namespaces();
                 Command::None
             }
-            KeyCode::Char('S') => Command::OpenStashes,
-            KeyCode::Char('o') => {
-                self.sort = self.sort.next();
-                drift::sort_by(&mut self.rows, self.sort);
-                self.selected = 0;
-                self.anchor = None;
-                self.clamp_selection();
-                self.detail_command()
+            KeyCode::Char('s') => Command::OpenStashes,
+            KeyCode::Char('S') => {
+                self.open_sort();
+                Command::None
             }
             KeyCode::Char('f') => self.act(Command::Fetch),
             KeyCode::Char('p') => {
@@ -835,12 +851,12 @@ impl App {
             }
             // Uppercase only: this destroys work, so a mistyped lowercase key
             // must not reach it. It then waits on a confirmation.
-            KeyCode::Char('P') => self.confirm(Destructive::Prune),
-            KeyCode::Char('s') => self.selected_path().map_or(Command::None, Command::Shell),
+            KeyCode::Char('X') => self.confirm(Destructive::Prune),
+            KeyCode::Enter => self.selected_path().map_or(Command::None, Command::Shell),
             KeyCode::Char('e') => self.selected_path().map_or(Command::None, Command::Editor),
-            KeyCode::Char('D') => self.upstream_target().map_or(Command::None, Command::Diff),
+            KeyCode::Char('U') => self.upstream_target().map_or(Command::None, Command::Diff),
             KeyCode::Char('L') => self.upstream_target().map_or(Command::None, Command::Log),
-            KeyCode::Char('A') => self
+            KeyCode::Char('M') => self
                 .selected_path()
                 .map_or(Command::None, Command::AncestorDiff),
             KeyCode::Char('b') => {
@@ -948,6 +964,28 @@ impl App {
                     };
                 }
                 KeyCode::Char('x') => return self.confirm_stash_drop(),
+                KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('s') => {
+                    self.close_picker();
+                    return Command::None;
+                }
+                _ => return Command::None,
+            }
+        }
+        if self.pane == Pane::Sort {
+            match key.code {
+                KeyCode::Down => {
+                    if let Some(p) = self.picker.as_mut() {
+                        p.move_by(1);
+                    }
+                    return Command::None;
+                }
+                KeyCode::Up => {
+                    if let Some(p) = self.picker.as_mut() {
+                        p.move_by(-1);
+                    }
+                    return Command::None;
+                }
+                KeyCode::Enter => return self.choose_sort(),
                 KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('S') => {
                     self.close_picker();
                     return Command::None;
@@ -1168,8 +1206,9 @@ mod tests {
         let p = app.selected().unwrap().path.clone();
         assert_eq!(app.on_key(key('f')), Command::Fetch(vec![p.clone()]));
         assert_eq!(app.on_key(key('p')), Command::Pull(vec![p.clone()]));
-        assert_eq!(app.on_key(key('s')), Command::Shell(p.clone()));
+        assert_eq!(app.on_key(code(KeyCode::Enter)), Command::Shell(p.clone()));
         assert_eq!(app.on_key(key('e')), Command::Editor(p));
+        assert_eq!(app.on_key(key('s')), Command::OpenStashes);
         assert_eq!(
             app.on_key(KeyEvent::new(KeyCode::Char('F'), KeyModifiers::SHIFT)),
             Command::FetchAll
@@ -1179,11 +1218,11 @@ mod tests {
     }
 
     #[test]
-    fn d_and_l_open_the_pager_for_the_selected_repository() {
+    fn u_and_l_open_the_pager_for_the_selected_repository() {
         let mut app = app_with(vec![row_behind("a")]);
         let path = app.selected().unwrap().path.clone();
         assert_eq!(
-            app.on_key(KeyEvent::new(KeyCode::Char('D'), KeyModifiers::SHIFT)),
+            app.on_key(KeyEvent::new(KeyCode::Char('U'), KeyModifiers::SHIFT)),
             Command::Diff(path.clone())
         );
         assert_eq!(
@@ -1196,7 +1235,7 @@ mod tests {
     fn there_is_nothing_to_diff_against_without_an_upstream() {
         let mut app = app_with(vec![row_no_upstream("a")]);
         assert_eq!(
-            app.on_key(KeyEvent::new(KeyCode::Char('D'), KeyModifiers::SHIFT)),
+            app.on_key(KeyEvent::new(KeyCode::Char('U'), KeyModifiers::SHIFT)),
             Command::None
         );
         assert!(app.toast().unwrap().contains("upstream"));
@@ -1350,7 +1389,7 @@ mod tests {
     fn only_lowercase_y_confirms_a_destructive_action() {
         for c in ['Y', 'n', 'x', '\n'] {
             let mut app = app_with(vec![row("a", 1)]);
-            app.on_key(key('P'));
+            app.on_key(key('X'));
             assert_eq!(app.pane(), Pane::Confirm);
             assert_eq!(
                 app.on_key(key(c)),
@@ -1541,22 +1580,30 @@ mod tests {
     }
 
     #[test]
-    fn o_cycles_the_sort_order_and_reorders_the_list() {
+    fn shift_s_opens_a_sort_picker_and_enter_applies_the_choice() {
         let mut app = app_with(vec![row("zzz", 9), row("aaa", 0)]);
         assert_eq!(app.sort_mode(), drift::Sort::Drift);
         assert_eq!(app.visible()[0].display_name, "zzz", "drifted first");
-        app.on_key(key('o'));
+
+        app.on_key(KeyEvent::new(KeyCode::Char('S'), KeyModifiers::SHIFT));
+        assert_eq!(app.pane(), Pane::Sort);
+        assert_eq!(app.picker_index(), 0, "opens on the sort in force");
+
+        app.on_key(code(KeyCode::Down));
+        app.on_key(code(KeyCode::Enter));
+        assert_eq!(app.pane(), Pane::List);
         assert_eq!(app.sort_mode(), drift::Sort::Name);
         assert_eq!(app.visible()[0].display_name, "aaa");
-        app.on_key(key('o'));
-        app.on_key(key('o'));
-        app.on_key(key('o'));
-        app.on_key(key('o'));
-        assert_eq!(
-            app.sort_mode(),
-            drift::Sort::Drift,
-            "five steps wrap around"
-        );
+    }
+
+    #[test]
+    fn esc_leaves_the_sort_picker_without_changing_anything() {
+        let mut app = app_with(vec![row("zzz", 9), row("aaa", 0)]);
+        app.on_key(KeyEvent::new(KeyCode::Char('S'), KeyModifiers::SHIFT));
+        app.on_key(code(KeyCode::Down));
+        app.on_key(code(KeyCode::Esc));
+        assert_eq!(app.pane(), Pane::List);
+        assert_eq!(app.sort_mode(), drift::Sort::Drift, "unchanged");
     }
 
     #[test]
@@ -1641,7 +1688,7 @@ mod tests {
     #[test]
     fn pruning_asks_for_confirmation_before_deleting_branches() {
         let mut app = app_with(vec![row("a", 1)]);
-        assert_eq!(app.on_key(key('P')), Command::None);
+        assert_eq!(app.on_key(key('X')), Command::None);
         assert_eq!(app.pane(), Pane::Confirm);
         assert!(app.pending().unwrap().summary.contains("upstream is gone"));
         match app.on_key(key('y')) {
@@ -1654,7 +1701,7 @@ mod tests {
     fn any_other_key_cancels_a_destructive_action() {
         for cancel in ['n', 'q', 'X'] {
             let mut app = app_with(vec![row("a", 1)]);
-            app.on_key(key('P'));
+            app.on_key(key('X'));
             assert_eq!(
                 app.on_key(key(cancel)),
                 Command::None,
@@ -1668,7 +1715,7 @@ mod tests {
     #[test]
     fn escape_cancels_a_destructive_action_rather_than_quitting() {
         let mut app = app_with(vec![row("a", 1)]);
-        app.on_key(key('P'));
+        app.on_key(key('X'));
         assert_eq!(app.on_key(code(KeyCode::Esc)), Command::None);
         assert_eq!(app.pane(), Pane::List);
     }
@@ -1677,21 +1724,19 @@ mod tests {
     fn destructive_keys_are_inert_with_no_selection() {
         let mut app = App::new();
         app.finish_scan();
-        assert_eq!(app.on_key(key('P')), Command::None);
+        assert_eq!(app.on_key(key('X')), Command::None);
         assert_eq!(app.pane(), Pane::List, "no confirmation for nothing");
     }
 
     #[test]
     fn the_removed_destructive_keys_do_nothing() {
         let mut app = app_with(vec![row("a", 1)]);
-        for c in ['X', 'C'] {
-            assert_eq!(
-                app.on_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::SHIFT)),
-                Command::None,
-                "{c} should no longer be bound"
-            );
-            assert_eq!(app.pane(), Pane::List, "{c} should not open a confirmation");
-        }
+        assert_eq!(
+            app.on_key(KeyEvent::new(KeyCode::Char('C'), KeyModifiers::SHIFT)),
+            Command::None,
+            "C should no longer be bound"
+        );
+        assert_eq!(app.pane(), Pane::List, "C should not open a confirmation");
     }
 
     #[test]
@@ -2012,13 +2057,13 @@ mod tests {
     }
 
     #[test]
-    fn shift_a_diffs_the_selected_repository_against_its_ancestor() {
+    fn shift_m_diffs_the_selected_repository_against_its_ancestor() {
         let mut app = app_with(vec![row_no_upstream("a")]);
         let path = app.selected().unwrap().path.clone();
         assert_eq!(
-            app.on_key(KeyEvent::new(KeyCode::Char('A'), KeyModifiers::SHIFT)),
+            app.on_key(KeyEvent::new(KeyCode::Char('M'), KeyModifiers::SHIFT)),
             Command::AncestorDiff(path),
-            "no upstream is required, unlike D"
+            "no upstream is required, unlike U"
         );
     }
 
@@ -2073,10 +2118,7 @@ mod tests {
     #[test]
     fn s_asks_the_loop_for_the_stash_list() {
         let mut app = app_with(vec![row("a", 0)]);
-        assert_eq!(
-            app.on_key(KeyEvent::new(KeyCode::Char('S'), KeyModifiers::SHIFT)),
-            Command::OpenStashes
-        );
+        assert_eq!(app.on_key(key('s')), Command::OpenStashes);
     }
 
     #[test]
