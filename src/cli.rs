@@ -54,9 +54,24 @@ pub struct Args {
     /// Alternate config file.
     #[arg(long)]
     pub config: Option<PathBuf>,
+
+    /// Write a commented example config file if none exists, then exit.
+    #[arg(long)]
+    pub init_config: bool,
 }
 
 pub fn run(args: Args) -> anyhow::Result<i32> {
+    if args.init_config {
+        let path = args.config.clone().unwrap_or_else(Config::default_path);
+        let mut stdout = std::io::stdout().lock();
+        if Config::init(&path)? {
+            writeln!(stdout, "Wrote {}", path.display())?;
+        } else {
+            writeln!(stdout, "{} already exists; left it alone", path.display())?;
+        }
+        return Ok(0);
+    }
+
     let cfg = Config::load(args.config.as_deref())?;
     let mut opts = ScanOptions::from_config(&cfg);
     if let Some(p) = &args.path {

@@ -27,6 +27,7 @@ gitdrift --json          # JSON, then exit
 gitdrift --drifted-only  # hide clean, in-sync repositories
 gitdrift --color=never   # or set NO_COLOR
 gitdrift --config PATH   # use a different config file
+gitdrift --init-config   # write a commented example config, unless one exists
 ```
 
 ## Keys
@@ -117,8 +118,10 @@ make install
 
 ## Configuration
 
-See `config.example.toml`; copy it to `~/.config/gitdrift/config.toml`.
-Everything is optional — with no config file, `gitdrift` scans `~/gitlab`.
+Run `gitdrift --init-config` to write `~/.config/gitdrift/config.toml`, or
+copy `config.example.toml` yourself. Every key is commented with its default
+and an example — everything is optional, and with no config file at all,
+`gitdrift` scans `~/gitlab`.
 
 ## Pagers
 

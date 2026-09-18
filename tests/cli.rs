@@ -112,3 +112,24 @@ fn plain_and_json_together_is_rejected() {
         .assert()
         .failure();
 }
+
+#[test]
+fn init_config_writes_the_template_once_and_leaves_it_alone_after() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+
+    Command::cargo_bin("gitdrift")
+        .unwrap()
+        .args(["--init-config", "--config", path.to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(contains("Wrote"));
+    assert!(std::fs::read_to_string(&path).unwrap().contains("roots"));
+
+    Command::cargo_bin("gitdrift")
+        .unwrap()
+        .args(["--init-config", "--config", path.to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(contains("already exists"));
+}

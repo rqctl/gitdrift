@@ -53,10 +53,27 @@ impl Default for Config {
     }
 }
 
+/// The template written by `--init-config`, kept in sync with the repo's
+/// own `config.example.toml`.
+const TEMPLATE: &str = include_str!("../config.example.toml");
+
 impl Config {
     /// Path of the config file when the caller has no opinion.
     pub fn default_path() -> PathBuf {
         expand("~/.config/gitdrift/config.toml")
+    }
+
+    /// Writes the commented example config to `path` unless one exists
+    /// there already. Returns whether it wrote a file.
+    pub fn init(path: &Path) -> anyhow::Result<bool> {
+        if path.exists() {
+            return Ok(false);
+        }
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        std::fs::write(path, TEMPLATE)?;
+        Ok(true)
     }
 
     /// Load config, falling back to defaults. A missing file is not an error;
@@ -159,6 +176,22 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let p = write(d.path(), "default_branches = [\"trunk\"]\n");
         assert_eq!(Config::load(Some(&p)).unwrap().default_branches, ["trunk"]);
+    }
+
+    #[test]
+    fn init_writes_the_template_when_nothing_is_there() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("nested/config.toml");
+        assert!(Config::init(&p).unwrap());
+        assert!(std::fs::read_to_string(&p).unwrap().contains("roots"));
+    }
+
+    #[test]
+    fn init_does_not_overwrite_an_existing_config() {
+        let d = tempfile::tempdir().unwrap();
+        let p = write(d.path(), "roots = [\"~/somewhere\"]\n");
+        assert!(!Config::init(&p).unwrap());
+        assert!(std::fs::read_to_string(&p).unwrap().contains("somewhere"));
     }
 
     #[test]

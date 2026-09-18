@@ -1,19 +1,30 @@
-# Copy to ~/.config/gitdrift/config.toml
+# Copy to ~/.config/gitdrift/config.toml, or generate with `gitdrift --init-config`.
+# Every key is optional; the commented-out value is the built-in default.
 
+# Directories to scan for repositories.
+# Default: ["~/gitlab"]
+# Example: roots = ["~/gitlab", "~/work"]
 roots = ["~/gitlab"]
 
-# Replaces the built-in prune list.
-# prune = [".terragrunt-cache", "node_modules"]
+# Directory names skipped while walking a root, at any depth. Setting `prune`
+# replaces the built-in list entirely.
+# Default: [".terragrunt-cache", ".terraform", "node_modules", "target", ".venv", "vendor", ".cache", ".direnv"]
+# Example: prune = [".terragrunt-cache", "node_modules"]
 
-# Appends to the built-in prune list.
+# Appends to the built-in prune list instead of replacing it.
+# Default: []
+# Example: prune_extra = ["dist", "build"]
 prune_extra = []
 
-# Unset: $VISUAL, then $EDITOR, then vi.
-# editor = "nvim"
+# Editor used by the `e` key.
+# Default: unset — uses $VISUAL, then $EDITOR, then vi.
+# Example: editor = "nvim"
 
 # Simultaneous git processes when fetching or pruning across repositories.
+# Default: 16
 concurrency = 16
 
 # Branch names treated as unremarkable. Anything else renders in bold so an
 # unusual checkout stands out.
-# default_branches = ["main", "master", "trunk", "develop"]
+# Default: ["main", "master", "trunk", "develop"]
+# Example: default_branches = ["main", "trunk"]
