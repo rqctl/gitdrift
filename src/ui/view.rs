@@ -818,12 +818,19 @@ fn draw_stashes(frame: &mut Frame, app: &App, area: Rect) {
 /// reachable at the bottom of a scrolled pane. Also read by the cross-check test.
 const HELP: &[(&str, &[(&str, &str)])] = &[
     (
-        "List view",
+        "List view — navigate",
         &[
             ("↑↓ PgUp PgDn", "Move"),
             ("g / Shift+g", "First / last"),
             ("n", "Filter by namespace"),
             ("o", "Cycle sort: drift, name, recent, stale"),
+            ("d", "Drifted only"),
+            ("/", "Filter"),
+        ],
+    ),
+    (
+        "List view — act",
+        &[
             ("Space", "Mark / unmark (actions apply to marks)"),
             ("Shift+v", "Sweep the last mark's state to here"),
             ("a", "Mark all visible, or clear the marks"),
@@ -840,8 +847,6 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
             ("b", "Switch branch on the current repo"),
             ("Shift+s", "Browse stashes: view, drop"),
             ("r", "Rescan"),
-            ("d", "Drifted only"),
-            ("/", "Filter"),
         ],
     ),
     (
@@ -879,6 +884,17 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
     ),
 ];
 
+/// One colour per `HELP` section, cycled the way terragrunt tints each
+/// unit's log output so sections stay visually separable while scrolling.
+const SECTION_COLORS: &[theme::Color] = &[
+    theme::Color::Teal,
+    theme::Color::Mauve,
+    theme::Color::Pink,
+    theme::Color::Blue,
+    theme::Color::Yellow,
+    theme::Color::DimGreen,
+];
+
 fn draw_help(frame: &mut Frame, app: &App, area: Rect) -> u16 {
     let key_w = HELP
         .iter()
@@ -892,10 +908,15 @@ fn draw_help(frame: &mut Frame, app: &App, area: Rect) -> u16 {
         if i > 0 {
             lines.push(Line::raw(""));
         }
-        lines.push(section(title));
+        let color = SECTION_COLORS[i % SECTION_COLORS.len()];
+        let title_style = Style::default()
+            .fg(color.to_ratatui())
+            .add_modifier(Modifier::BOLD);
+        let key_style = Style::default().fg(color.to_ratatui());
+        lines.push(Line::from(Span::styled(title.to_string(), title_style)));
         for (k, v) in *rows {
             lines.push(Line::from(vec![
-                Span::styled(format!("  {k:key_w$}"), accent()),
+                Span::styled(format!("  {k:key_w$}"), key_style),
                 Span::raw(*v),
             ]));
         }
@@ -915,17 +936,6 @@ const HINTS: &[(&str, &str)] = &[
     ("↑↓", "move"),
     ("n", "namespace"),
     ("o", "sort"),
-    ("Space", "mark"),
-    ("Shift+v", "range"),
-    ("a", "all"),
-    ("f", "fetch"),
-    ("p", "pull"),
-    ("Shift+p", "prune"),
-    ("Shift+d", "diff"),
-    ("Shift+l", "log"),
-    ("Shift+a", "ancestor diff"),
-    ("b", "branch"),
-    ("Shift+s", "stash"),
     ("/", "filter"),
 ];
 
@@ -1143,7 +1153,7 @@ mod tests {
     fn the_footer_shows_keybindings() {
         let app = app_with(vec![row("a", 1)]);
         let out = render(120, 20, &app);
-        assert!(out.contains("fetch"), "{out}");
+        assert!(out.contains("move"), "{out}");
         assert!(out.contains("quit"), "{out}");
     }
 

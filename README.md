@@ -31,32 +31,7 @@ gitdrift --config PATH   # use a different config file
 
 ## Keys
 
-| Key | Action |
-|---|---|
-| `↑` `↓` `PgUp` `PgDn` | Move |
-| `g` / `Shift+g` | First / last |
-| `n` | Filter by namespace |
-| `o` | Cycle sort: drift, name, recent, stale |
-| `Space` | Mark / unmark |
-| `Shift+v` | Sweep the last mark's state to the cursor |
-| `a` | Mark all visible, or clear the marks |
-| `f` / `Shift+f` | Fetch marked-or-current / fetch all |
-| `p` | `pull` (honours your `pull.rebase`/`pull.ff`), marked-or-current |
-| `Shift+p` | Prune gone branches — asks first |
-| `s` / `e` | Shell / editor in the repo |
-| `Shift+d` | Diff `HEAD...@{u}` in your pager |
-| `Shift+l` | Log of the incoming commits, in your pager |
-| `Shift+a` | Diff against the default branch, in your pager |
-| `b` | Browse branches: switch, diff against the default, delete — asks first |
-| `Shift+j` / `Shift+k` | Scroll the detail pane — the title shows `▴▾` while there is more |
-| `Shift+s` | Browse stashes: view in your pager, drop — asks first |
-| `x` | Drop the selected stash — stash pane only, asks first |
-| `r` | Rescan |
-| `d` | Drifted only |
-| `/` | Filter |
-| `!` | Problems |
-| `?` | Help — sectioned by which view each binding applies to |
-| `Esc` / `q` | Quit |
+Press `?` once the TUI is open for the full, sectioned list of keybindings.
 
 `Space` marks rows; `f`, `p` and `Shift+p` then act on every marked
 repository instead of the one under the cursor. `Shift+v` marks everything between the last
