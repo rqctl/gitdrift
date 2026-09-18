@@ -1,10 +1,10 @@
 # Copy to ~/.config/gitdrift/config.toml, or generate with `gitdrift --init-config`.
-# Every key is optional; the commented-out value is the built-in default.
+# Every key is optional. Each one below shows its built-in default and a
+# separate example of how to set it.
 
 # Directories to scan for repositories.
 # Default: ["~/gitlab"]
 # Example: roots = ["~/gitlab", "~/work"]
-roots = ["~/gitlab"]
 
 # Directory names skipped while walking a root, at any depth. Setting `prune`
 # replaces the built-in list entirely.
@@ -14,7 +14,6 @@ roots = ["~/gitlab"]
 # Appends to the built-in prune list instead of replacing it.
 # Default: []
 # Example: prune_extra = ["dist", "build"]
-prune_extra = []
 
 # Editor used by the `e` key.
 # Default: unset — uses $VISUAL, then $EDITOR, then vi.
@@ -22,7 +21,7 @@ prune_extra = []
 
 # Simultaneous git processes when fetching or pruning across repositories.
 # Default: 16
-concurrency = 16
+# Example: concurrency = 8
 
 # Branch names treated as unremarkable. Anything else renders in bold so an
 # unusual checkout stands out.
