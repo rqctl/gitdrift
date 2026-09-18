@@ -262,6 +262,7 @@ mod tests {
             untracked: 0,
             conflicted: 0,
             stash_count: 0,
+            local_branches: 0,
             last_commit_time: Some(1),
             fetch_age: None,
             error: None,

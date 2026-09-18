@@ -28,6 +28,8 @@ pub struct RepoStatus {
     pub untracked: u32,
     pub conflicted: u32,
     pub stash_count: u32,
+    /// Count of refs under `refs/heads`.
+    pub local_branches: u32,
     /// Unix seconds of the HEAD commit.
     pub last_commit_time: Option<i64>,
     /// Age of `.git/FETCH_HEAD`, i.e. how stale ahead/behind may be.
@@ -50,6 +52,7 @@ impl RepoStatus {
             untracked: 0,
             conflicted: 0,
             stash_count: 0,
+            local_branches: 0,
             last_commit_time: None,
             fetch_age: None,
             error: None,
@@ -101,8 +104,19 @@ fn fill(path: &Path, out: &mut RepoStatus) -> anyhow::Result<()> {
     count_changes(&repo, out)?;
     count_ahead_behind(&repo, &head, out);
     out.stash_count = count_stashes(&repo);
+    out.local_branches = count_local_branches(&repo);
     out.fetch_age = fetch_age(path);
     Ok(())
+}
+
+fn count_local_branches(repo: &gix::Repository) -> u32 {
+    let Ok(refs) = repo.references() else {
+        return 0;
+    };
+    let Ok(iter) = refs.local_branches() else {
+        return 0;
+    };
+    iter.filter_map(Result::ok).count() as u32
 }
 
 fn count_changes(repo: &gix::Repository, out: &mut RepoStatus) -> anyhow::Result<()> {

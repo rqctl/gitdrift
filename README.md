@@ -43,8 +43,8 @@ action too, and gitdrift says so rather than quietly doing nothing.
 `n` opens a picker listing every top-level namespace (`idp`, `mkp`, `aws`, …)
 with its repository count, plus "all". Pick one with `↑`/`↓` and `Enter`; it
 beats scrolling a few hundred rows. `o` changes the order: drift (the
-default), name, most recently committed, least recently fetched. The list
-pane's own title bar shows both.
+default), name, most recently committed, least recently fetched, most local
+branches. The list pane's own title bar shows both.
 
 `b` opens a picker of the repository's local branches. `Enter` switches to
 the highlighted one; `d` diffs it against the default branch in your pager
@@ -90,6 +90,7 @@ regardless.
 | `●N` | unstaged changes |
 | `?N` | untracked files |
 | `⚑N` | stashes |
+| `⎇N` | local branches |
 | `⌀` | detached HEAD |
 | `⊘` | no upstream |
 | `✔` | clean and in sync |

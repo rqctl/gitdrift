@@ -119,6 +119,11 @@ pub fn plain(rows: &[RepoStatus], colorize: bool) -> String {
         .max()
         .unwrap_or(6)
         .min(30);
+    let branches_w = rows
+        .iter()
+        .map(|r| format!("⎇{}", r.local_branches).chars().count())
+        .max()
+        .unwrap_or(2);
 
     let mut out = String::new();
     for r in rows {
@@ -129,6 +134,8 @@ pub fn plain(rows: &[RepoStatus], colorize: bool) -> String {
         ));
         out.push_str("  ");
         out.push_str(&pad(&head_label(r), head_w));
+        out.push_str("  ");
+        out.push_str(&pad(&format!("⎇{}", r.local_branches), branches_w));
         out.push_str("  ");
         let cells: Vec<String> = status_cells(r)
             .into_iter()
@@ -213,6 +220,7 @@ mod tests {
             untracked: 0,
             conflicted: 0,
             stash_count: 0,
+            local_branches: 0,
             last_commit_time: Some(1),
             fetch_age: None,
             error: None,

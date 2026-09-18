@@ -137,6 +137,15 @@ fn counts_stashes() {
 }
 
 #[test]
+fn counts_local_branches() {
+    let r = TestRepo::new();
+    r.commit("a.txt", "one", "one");
+    r.git(&["branch", "topic-a"]);
+    r.git(&["branch", "topic-b"]);
+    assert_eq!(s(&r).local_branches, 3, "main plus the two topic branches");
+}
+
+#[test]
 fn detects_detached_head() {
     let r = TestRepo::new();
     r.commit("a.txt", "one", "one");

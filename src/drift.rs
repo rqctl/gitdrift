@@ -59,6 +59,7 @@ pub enum Sort {
     Name,
     Recent,
     Stale,
+    Branches,
 }
 
 impl Sort {
@@ -68,6 +69,7 @@ impl Sort {
             Sort::Name => "name",
             Sort::Recent => "recently committed",
             Sort::Stale => "least recently fetched",
+            Sort::Branches => "most local branches",
         }
     }
 
@@ -76,7 +78,8 @@ impl Sort {
             Sort::Drift => Sort::Name,
             Sort::Name => Sort::Recent,
             Sort::Recent => Sort::Stale,
-            Sort::Stale => Sort::Drift,
+            Sort::Stale => Sort::Branches,
+            Sort::Branches => Sort::Drift,
         }
     }
 }
@@ -95,6 +98,11 @@ pub fn sort_by(rows: &mut [RepoStatus], mode: Sort) {
         Sort::Stale => rows.sort_by(|a, b| {
             b.fetch_age
                 .cmp(&a.fetch_age)
+                .then_with(|| a.display_name.cmp(&b.display_name))
+        }),
+        Sort::Branches => rows.sort_by(|a, b| {
+            b.local_branches
+                .cmp(&a.local_branches)
                 .then_with(|| a.display_name.cmp(&b.display_name))
         }),
     }
@@ -128,6 +136,7 @@ mod tests {
             untracked: 0,
             conflicted: 0,
             stash_count: 0,
+            local_branches: 0,
             last_commit_time: Some(1000),
             fetch_age: None,
             error: None,
@@ -238,5 +247,16 @@ mod tests {
         let mut rows = vec![without, with];
         sort(&mut rows);
         assert_eq!(rows[0].display_name, "with");
+    }
+
+    #[test]
+    fn branches_sort_puts_the_most_local_branches_first() {
+        let mut few = row("few");
+        few.local_branches = 1;
+        let mut many = row("many");
+        many.local_branches = 12;
+        let mut rows = vec![few, many];
+        sort_by(&mut rows, Sort::Branches);
+        assert_eq!(rows[0].display_name, "many");
     }
 }

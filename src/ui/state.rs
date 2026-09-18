@@ -1041,6 +1041,7 @@ mod tests {
             untracked: 0,
             conflicted: 0,
             stash_count: 0,
+            local_branches: 0,
             last_commit_time: Some(1),
             fetch_age: None,
             error: None,
@@ -1550,10 +1551,11 @@ mod tests {
         app.on_key(key('o'));
         app.on_key(key('o'));
         app.on_key(key('o'));
+        app.on_key(key('o'));
         assert_eq!(
             app.sort_mode(),
             drift::Sort::Drift,
-            "four steps wrap around"
+            "five steps wrap around"
         );
     }
 

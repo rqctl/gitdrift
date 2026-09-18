@@ -97,6 +97,7 @@ fn pad_to(spans: &mut Vec<Span<'static>>, used: usize, width: usize) {
 struct Cols {
     name: usize,
     head: usize,
+    branches: usize,
     /// The band under the selected row has to reach the far edge.
     total: usize,
 }
@@ -111,6 +112,12 @@ const STATUS_MAX: usize = 40;
 const NAME_MIN: usize = 12;
 /// Widest the incoming +/- bar is allowed to get.
 const BAR_MAX: usize = 24;
+/// Glyph for the local-branch-count column.
+const BRANCHES_GLYPH: char = '⎇';
+
+fn branches_label(s: &RepoStatus) -> String {
+    format!("{BRANCHES_GLYPH}{}", s.local_branches)
+}
 
 impl Cols {
     fn measure(rows: &[&RepoStatus], inner_width: usize) -> Cols {
@@ -119,6 +126,11 @@ impl Cols {
             .map(|r| head_label(r).chars().count())
             .max()
             .unwrap_or(6);
+        let branches = rows
+            .iter()
+            .map(|r| branches_label(r).chars().count())
+            .max()
+            .unwrap_or(2);
         let status = rows
             .iter()
             .map(|r| status_width(r))
@@ -131,10 +143,10 @@ impl Cols {
             .max()
             .unwrap_or(NAME_MIN);
 
-        // Branch and status get their full width; the name absorbs the rest
-        // and shortens its middle to fit.
+        // Branch, branch count and status get their full width; the name
+        // absorbs the rest and shortens its middle to fit.
         let mut head = natural_head.clamp(1, HEAD_MAX);
-        let fixed = CURSOR_W + MARK_W + GAP_W + GAP_W + status;
+        let fixed = CURSOR_W + MARK_W + GAP_W + GAP_W + GAP_W + branches + status;
         let mut name = longest.min(inner_width.saturating_sub(fixed + head));
 
         if name < NAME_MIN {
@@ -146,6 +158,7 @@ impl Cols {
         Cols {
             name,
             head,
+            branches,
             total: inner_width,
         }
     }
@@ -213,6 +226,12 @@ fn row_line(
     let head_len = head.chars().count();
     spans.push(Span::styled(head, theme::branch_style(s, default_branches)));
     pad_to(&mut spans, head_len, cols.head);
+    spans.push(Span::raw("  "));
+
+    let branches = branches_label(s);
+    let branches_len = branches.chars().count();
+    spans.push(Span::styled(branches, dim()));
+    pad_to(&mut spans, branches_len, cols.branches);
     spans.push(Span::raw("  "));
 
     for (facet, text) in status_cells(s) {
@@ -823,7 +842,7 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
             ("↑↓ PgUp PgDn", "Move"),
             ("g / Shift+g", "First / last"),
             ("n", "Filter by namespace"),
-            ("o", "Cycle sort: drift, name, recent, stale"),
+            ("o", "Cycle sort: drift, name, recent, stale, branches"),
             ("d", "Drifted only"),
             ("/", "Filter"),
         ],
@@ -1086,6 +1105,7 @@ mod tests {
             untracked: 0,
             conflicted: 0,
             stash_count: 0,
+            local_branches: 0,
             last_commit_time: Some(1),
             fetch_age: None,
             error: None,
