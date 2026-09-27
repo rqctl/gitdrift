@@ -30,7 +30,7 @@ shellexpand = "3"
 toml = "1"
 
 [dependencies.gix]
-version = "0.87"
+version = "0.88"
 default-features = false
 features = [
   "sha1",
