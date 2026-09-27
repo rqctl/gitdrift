@@ -519,7 +519,10 @@ fn draw_detail(frame: &mut Frame, app: &App, detail: Option<&RepoDetail>, area: 
             ),
             dim(),
         )));
-        lines.push(Line::from(Span::styled("  D diff   L log", accent())));
+        lines.push(Line::from(Span::styled(
+            "  Shift+u diff   Shift+l log",
+            accent(),
+        )));
     }
 
     if !d.stashes.is_empty() {
@@ -1726,7 +1729,7 @@ mod tests {
             out.contains("1 file, 42 insertions(+), 17 deletions(-)"),
             "{out}"
         );
-        assert!(out.contains("D diff"), "{out}");
+        assert!(out.contains("Shift+u diff"), "{out}");
     }
 
     #[test]

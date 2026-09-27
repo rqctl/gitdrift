@@ -101,6 +101,7 @@ pub fn run(opts: ScanOptions, cfg: &Config, drifted_only: bool) -> anyhow::Resul
 
     let mut loop_state = LoopState {
         current_detail: None,
+        detail_pending: None,
         detail_area: None,
         generation: 0,
         list_state: ListState::default(),
@@ -118,6 +119,9 @@ pub fn run(opts: ScanOptions, cfg: &Config, drifted_only: bool) -> anyhow::Resul
 /// gathered so the loop itself keeps a manageable parameter count.
 struct LoopState {
     current_detail: Option<(PathBuf, RepoDetail)>,
+    /// Set while a `spawn_detail` for it is in flight, so a status update
+    /// that lands before the result does doesn't fire a second request.
+    detail_pending: Option<PathBuf>,
     /// Where the detail pane was last drawn, for routing the mouse wheel.
     detail_area: Option<ratatui::layout::Rect>,
     generation: u64,
@@ -144,9 +148,12 @@ fn event_loop(
                 Msg::Scan(ScanEvent::Problem(p), _) => app.push_problem(p),
                 Msg::Scan(ScanEvent::Done, _) => {
                     app.finish_scan();
-                    request_current_detail(app, ls.generation, tx);
+                    ensure_detail_for_selection(app, ls, tx);
                 }
                 Msg::Detail(path, gen, d) => {
+                    if ls.detail_pending.as_deref() == Some(path.as_path()) {
+                        ls.detail_pending = None;
+                    }
                     // Reject results for a generation or a selection the user has since moved past.
                     if gen == ls.generation && app.selected().is_some_and(|s| s.path == path) {
                         ls.current_detail = Some((path, *d));
@@ -159,9 +166,7 @@ fn event_loop(
                     if !text.is_empty() {
                         app.set_toast(text, TOAST_TTL);
                     }
-                    if app.selected().is_some_and(|s| s.path == path) {
-                        spawn_detail(path, ls.generation, tx.clone());
-                    }
+                    sync_detail_after_status_change(app, ls, tx, path);
                 }
                 Msg::JobStep(id) => app.advance_job(id),
                 Msg::JobEnd(id) => {
@@ -211,7 +216,7 @@ fn event_loop(
         match command {
             Command::None => {}
             Command::Quit => return Ok(()),
-            Command::LoadDetail(path) => spawn_detail(path, ls.generation, tx.clone()),
+            Command::LoadDetail(path) => request_detail(ls, tx, path),
             Command::Rescan => do_rescan(app, ls, opts, tx),
             Command::Fetch(paths) => {
                 let targets = named(app, paths);
@@ -265,6 +270,7 @@ fn event_loop(
                     app.set_toast(e.to_string(), TOAST_TTL);
                 }
                 refresh_one(app, &path, &name);
+                sync_detail_after_status_change(app, ls, tx, path);
             }
             Command::Editor(path) => {
                 let name = display_name_of(app, &path);
@@ -273,6 +279,7 @@ fn event_loop(
                     app.set_toast(e.to_string(), TOAST_TTL);
                 }
                 refresh_one(app, &path, &name);
+                sync_detail_after_status_change(app, ls, tx, path);
             }
             Command::Diff(path) => {
                 if let Err(e) = suspend(term, || actions::view_diff(&path))? {
@@ -394,20 +401,48 @@ fn event_loop(
 fn do_rescan(app: &mut App, ls: &mut LoopState, opts: &ScanOptions, tx: &mpsc::Sender<Msg>) {
     app.begin_scan();
     ls.current_detail = None;
+    ls.detail_pending = None;
     ls.generation += 1;
     spawn_scan(opts.clone(), ls.generation, tx.clone());
-    request_current_detail(app, ls.generation, tx);
+    ensure_detail_for_selection(app, ls, tx);
 }
 
 fn over(a: ratatui::layout::Rect, col: u16, row: u16) -> bool {
     col >= a.x && col < a.x + a.width && row >= a.y && row < a.y + a.height
 }
 
-/// Re-request detail for whatever is currently selected, e.g. after a rescan
-/// repopulates the list, so the pane doesn't sit on "loading…" until a keypress.
-fn request_current_detail(app: &App, generation: u64, tx: &mpsc::Sender<Msg>) {
-    if let Some(sel) = app.selected() {
-        spawn_detail(sel.path.clone(), generation, tx.clone());
+/// Request detail for `path`, tracking it as in flight.
+fn request_detail(ls: &mut LoopState, tx: &mpsc::Sender<Msg>, path: PathBuf) {
+    ls.detail_pending = Some(path.clone());
+    spawn_detail(path, ls.generation, tx.clone());
+}
+
+/// Request detail for whatever is currently selected, unless it's already
+/// loaded or already in flight — e.g. after a rescan repopulates the list, so
+/// the pane doesn't sit on "loading…" until a keypress.
+fn ensure_detail_for_selection(app: &App, ls: &mut LoopState, tx: &mpsc::Sender<Msg>) {
+    let Some(path) = app.selected().map(|s| s.path.clone()) else {
+        return;
+    };
+    let loaded = ls.current_detail.as_ref().is_some_and(|(p, _)| *p == path);
+    let pending = ls.detail_pending.as_deref() == Some(path.as_path());
+    if !loaded && !pending {
+        request_detail(ls, tx, path);
+    }
+}
+
+/// Reloads whatever is now under the cursor after a status update re-sorts
+/// the list — the same repo (stale detail) or a different one.
+fn sync_detail_after_status_change(
+    app: &App,
+    ls: &mut LoopState,
+    tx: &mpsc::Sender<Msg>,
+    changed: PathBuf,
+) {
+    if app.selected().is_some_and(|s| s.path == changed) {
+        request_detail(ls, tx, changed);
+    } else {
+        ensure_detail_for_selection(app, ls, tx);
     }
 }
 
