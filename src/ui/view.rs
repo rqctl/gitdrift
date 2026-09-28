@@ -520,7 +520,7 @@ fn draw_detail(frame: &mut Frame, app: &App, detail: Option<&RepoDetail>, area: 
             dim(),
         )));
         lines.push(Line::from(Span::styled(
-            "  Shift+u diff   Shift+l log",
+            "  Shift+d diff   Shift+l log",
             accent(),
         )));
     }
@@ -897,7 +897,7 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
             ),
             ("Shift+x", "Prune gone branches (confirmed)"),
             ("Enter / e", "Shell / editor in repo"),
-            ("Shift+u", "Diff HEAD...@{u} in your pager"),
+            ("Shift+d", "Diff HEAD...@{u} in your pager"),
             ("Shift+l", "Log of the incoming commits, in your pager"),
             ("Shift+m", "Diff against the default branch, in your pager"),
             ("b", "Switch branch on the current repo"),
@@ -1729,7 +1729,7 @@ mod tests {
             out.contains("1 file, 42 insertions(+), 17 deletions(-)"),
             "{out}"
         );
-        assert!(out.contains("Shift+u diff"), "{out}");
+        assert!(out.contains("Shift+d diff"), "{out}");
     }
 
     #[test]

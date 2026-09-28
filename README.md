@@ -133,7 +133,7 @@ and an example — everything is optional, and with no config file at all,
 
 ## Pagers
 
-`Shift+u`, `Shift+l`, `Shift+m`, `d` in the branch popover, and viewing a
+`Shift+d`, `Shift+l`, `Shift+m`, `d` in the branch popover, and viewing a
 stash all hand the terminal to a pager. gitdrift picks it
 from `GIT_PAGER`, then `PAGER`, falling back to `less -R` — it does not use
 `core.pager`, because a global `core.pager=` (a deliberate "never page" for

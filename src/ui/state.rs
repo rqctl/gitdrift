@@ -871,7 +871,7 @@ impl App {
             KeyCode::Char('X') => self.confirm(Destructive::Prune),
             KeyCode::Enter => self.selected_path().map_or(Command::None, Command::Shell),
             KeyCode::Char('e') => self.selected_path().map_or(Command::None, Command::Editor),
-            KeyCode::Char('U') => self.upstream_target().map_or(Command::None, Command::Diff),
+            KeyCode::Char('D') => self.upstream_target().map_or(Command::None, Command::Diff),
             KeyCode::Char('L') => self.upstream_target().map_or(Command::None, Command::Log),
             KeyCode::Char('M') => self
                 .selected_path()
@@ -1235,11 +1235,11 @@ mod tests {
     }
 
     #[test]
-    fn u_and_l_open_the_pager_for_the_selected_repository() {
+    fn d_and_l_open_the_pager_for_the_selected_repository() {
         let mut app = app_with(vec![row_behind("a")]);
         let path = app.selected().unwrap().path.clone();
         assert_eq!(
-            app.on_key(KeyEvent::new(KeyCode::Char('U'), KeyModifiers::SHIFT)),
+            app.on_key(KeyEvent::new(KeyCode::Char('D'), KeyModifiers::SHIFT)),
             Command::Diff(path.clone())
         );
         assert_eq!(
@@ -1252,7 +1252,7 @@ mod tests {
     fn there_is_nothing_to_diff_against_without_an_upstream() {
         let mut app = app_with(vec![row_no_upstream("a")]);
         assert_eq!(
-            app.on_key(KeyEvent::new(KeyCode::Char('U'), KeyModifiers::SHIFT)),
+            app.on_key(KeyEvent::new(KeyCode::Char('D'), KeyModifiers::SHIFT)),
             Command::None
         );
         assert!(app.toast().unwrap().contains("upstream"));
