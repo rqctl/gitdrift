@@ -456,6 +456,9 @@ fn draw_detail(frame: &mut Frame, app: &App, detail: Option<&RepoDetail>, area: 
             Span::raw(if b.is_head { "* " } else { "  " }),
             Span::raw(b.name.clone()),
         ];
+        if let Some(up) = &b.upstream {
+            spans.push(Span::styled(format!(" → {up}"), dim()));
+        }
         if b.ahead > 0 {
             spans.push(Span::styled(
                 format!(" ↑{}", b.ahead),
@@ -1509,6 +1512,33 @@ mod tests {
         let out = buffer_string(term.backend().buffer());
         assert!(out.contains("Ctrl-C"), "the last row is reachable:\n{out}");
         assert!(out.contains('▴') && !out.contains('▾'), "{out}");
+    }
+
+    #[test]
+    fn detail_branches_show_their_upstream() {
+        let app = app_with(vec![row("a", 1)]);
+        let d = RepoDetail {
+            branches: vec![
+                crate::detail::BranchInfo {
+                    name: "main".into(),
+                    upstream: Some("origin/main".into()),
+                    ahead: 2,
+                    behind: 0,
+                    is_head: true,
+                },
+                crate::detail::BranchInfo {
+                    name: "wip".into(),
+                    upstream: None,
+                    ahead: 0,
+                    behind: 0,
+                    is_head: false,
+                },
+            ],
+            ..RepoDetail::default()
+        };
+        let (_, out) = render_detail(30, &app, &d);
+        assert!(out.contains("* main → origin/main ↑2"), "{out}");
+        assert!(out.contains("  wip ⊘"), "{out}");
     }
 
     #[test]
