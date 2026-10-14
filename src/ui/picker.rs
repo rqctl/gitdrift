@@ -14,12 +14,12 @@ impl Picker {
         }
     }
 
+    /// Wraps at both ends so the list can be cycled in either direction.
     pub fn move_by(&mut self, delta: isize) {
         if self.len == 0 {
             return;
         }
-        let max = (self.len - 1) as isize;
-        self.index = (self.index as isize + delta).clamp(0, max) as usize;
+        self.index = (self.index as isize + delta).rem_euclid(self.len as isize) as usize;
     }
 
     pub fn index(&self) -> usize {
@@ -40,12 +40,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_cursor_clamps_at_both_ends() {
+    fn the_cursor_wraps_at_both_ends() {
         let mut p = Picker::open(3, 0);
         p.move_by(-1);
-        assert_eq!(p.index(), 0);
-        p.move_by(10);
         assert_eq!(p.index(), 2);
+        p.move_by(1);
+        assert_eq!(p.index(), 0);
     }
 
     #[test]

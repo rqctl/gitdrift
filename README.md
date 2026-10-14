@@ -34,19 +34,30 @@ gitdrift --init-config   # write a commented example config, unless one exists
 
 Press `?` once the TUI is open for the full, sectioned list of keybindings.
 
-`Space` marks rows; `f`, `p` and `Shift+x` then act on every marked
-repository instead of the one under the cursor. `Shift+v` marks everything between the last
-mark and the cursor, and `a` marks the whole visible list — or clears the
-marks, if there are any. Marks survive a rescan, and only ever apply to
-repositories still on screen: narrowing by namespace or filter narrows the
-action too, and gitdrift says so rather than quietly doing nothing.
+**Marking.** `Space` toggles the mark on the row and moves down.
+`Ctrl+Space` marks every row from the last one you toggled to the cursor. `a`
+marks every visible row, or clears the marks if there are any. `f`, `p` and
+`Shift+x` then act on every marked repository instead of the one under the
+cursor. Marks survive a rescan, and only ever apply to repositories still on
+screen: narrowing by namespace or filter narrows the action too, and gitdrift
+says so rather than quietly doing nothing.
 
 `n` opens a picker listing every top-level namespace (`idp`, `mkp`, `aws`, …)
 with its repository count, plus "all". Pick one with `↑`/`↓` and `Enter`; it
 beats scrolling a few hundred rows. `Shift+s` opens the same kind of picker
-for sort order: drift (the default), name, most recently committed, least
-recently fetched, most local branches. The list pane's own title bar shows
-both.
+for sort order: Drift (the default), Name, Last commit, Last fetch and
+branch count ("# Branches"). The list pane's own title bar shows both. After
+the scan the list keeps its order while you act on repositories; a `↻ o` mark
+in the title says it has drifted out of order, and `o` re-sorts on demand.
+
+Fetching, pulling and pruning update rows in place and never rescan. `r`
+rescans to pick up repositories added or removed on disk, refreshing rows in
+place and sorting once when it finishes.
+
+`l` opens `lazygit` in the highlighted repository (it must be on your `PATH`).
+`w` opens the repository's page in your browser, through `git web--browse`
+(so `web.browser` and `$BROWSER` apply), from the remote the current branch
+tracks, else `origin`.
 
 `b` opens a picker of the repository's local branches. `Enter` switches to
 the highlighted one; `d` diffs it against the default branch in your pager

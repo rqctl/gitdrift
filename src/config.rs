@@ -17,7 +17,6 @@ pub const DEFAULT_PRUNE: &[&str] = &[
 pub struct Config {
     pub roots: Vec<PathBuf>,
     pub prune: Vec<String>,
-    pub editor: Option<String>,
     /// Max repositories touched at once by fetch and prune.
     pub concurrency: usize,
     /// Branch names that are unremarkable. Anything else is highlighted.
@@ -29,7 +28,6 @@ struct RawConfig {
     roots: Option<Vec<String>>,
     prune: Option<Vec<String>>,
     prune_extra: Option<Vec<String>>,
-    editor: Option<String>,
     concurrency: Option<usize>,
     default_branches: Option<Vec<String>>,
 }
@@ -43,7 +41,6 @@ impl Default for Config {
         Config {
             roots: vec![expand("~/gitlab")],
             prune: DEFAULT_PRUNE.iter().map(|s| (*s).to_string()).collect(),
-            editor: None,
             concurrency: 16,
             default_branches: crate::theme::DEFAULT_BRANCHES
                 .iter()
@@ -103,9 +100,6 @@ impl Config {
         if let Some(extra) = raw.prune_extra {
             cfg.prune.extend(extra);
         }
-        if let Some(editor) = raw.editor {
-            cfg.editor = Some(editor);
-        }
         if let Some(n) = raw.concurrency {
             cfg.concurrency = n.max(1);
         }
@@ -132,7 +126,6 @@ mod tests {
         assert!(c.roots[0].ends_with("gitlab"), "roots = {:?}", c.roots);
         assert!(c.prune.iter().any(|p| p == ".terragrunt-cache"));
         assert_eq!(c.concurrency, 16);
-        assert_eq!(c.editor, None);
     }
 
     #[test]

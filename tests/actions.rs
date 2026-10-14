@@ -1,8 +1,7 @@
 mod support;
 
 use gitdrift::actions::{
-    can_pull, delete_branch, drop_stash, fetch, pager, pull, resolve_editor, switch_branch,
-    ActionError,
+    can_pull, delete_branch, drop_stash, fetch, pager, pull, switch_branch, ActionError,
 };
 use gitdrift::status::{inspect, Head, RepoStatus};
 use support::TestRepo;
@@ -170,18 +169,6 @@ fn fetch_on_a_repository_with_no_remote_does_not_panic() {
 }
 
 #[test]
-fn editor_resolution_prefers_the_configured_editor() {
-    assert_eq!(resolve_editor(Some("nvim")), "nvim");
-}
-
-#[test]
-fn editor_resolution_falls_back_to_vi_when_nothing_is_set() {
-    // Cannot safely clear the process environment here, so only assert the
-    // configured branch and that the fallback chain never returns empty.
-    assert!(!resolve_editor(None).is_empty());
-}
-
-#[test]
 fn switch_branch_moves_head() {
     let r = TestRepo::new();
     r.commit("a", "1", "one");
@@ -243,4 +230,45 @@ fn the_pager_falls_back_when_the_environment_offers_none() {
         Some(v) => std::env::set_var("PAGER", v),
         None => std::env::remove_var("PAGER"),
     }
+}
+
+#[test]
+fn web_url_follows_the_tracked_remote_and_falls_back_to_origin() {
+    let r = TestRepo::new();
+    r.commit("a", "1", "one");
+    r.git(&[
+        "remote",
+        "add",
+        "origin",
+        "git@gitlab.corp.example:grp/sub/repo.git",
+    ]);
+    r.git(&["remote", "add", "fork", "https://github.com/me/repo.git"]);
+    assert_eq!(
+        gitdrift::actions::web_url(r.path(), Some("main")).unwrap(),
+        "https://gitlab.corp.example/grp/sub/repo"
+    );
+    r.git(&["config", "branch.main.remote", "fork"]);
+    assert_eq!(
+        gitdrift::actions::web_url(r.path(), Some("main")).unwrap(),
+        "https://github.com/me/repo"
+    );
+}
+
+#[test]
+fn web_url_applies_instead_of_rewrites() {
+    let r = TestRepo::new();
+    r.commit("a", "1", "one");
+    r.git(&["remote", "add", "origin", "gl:grp/repo.git"]);
+    r.git(&["config", "url.git@gitlab.corp.example:.insteadOf", "gl:"]);
+    assert_eq!(
+        gitdrift::actions::web_url(r.path(), None).unwrap(),
+        "https://gitlab.corp.example/grp/repo"
+    );
+}
+
+#[test]
+fn web_url_refuses_a_repository_without_a_remote() {
+    let r = TestRepo::new();
+    r.commit("a", "1", "one");
+    assert!(gitdrift::actions::web_url(r.path(), None).is_err());
 }

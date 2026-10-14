@@ -73,47 +73,66 @@ impl Sort {
 
     pub fn label(self) -> &'static str {
         match self {
-            Sort::Drift => "drift",
-            Sort::Name => "name",
-            Sort::Recent => "recently committed",
-            Sort::Stale => "least recently fetched",
-            Sort::Branches => "most local branches",
+            Sort::Drift => "Drift",
+            Sort::Name => "Name",
+            Sort::Recent => "Last commit",
+            Sort::Stale => "Last fetch",
+            Sort::Branches => "# Branches",
+        }
+    }
+
+    /// The order, in a few words, for the popover.
+    pub fn order(self) -> &'static str {
+        match self {
+            Sort::Drift => "Most drifted first",
+            Sort::Name => "A to Z",
+            Sort::Recent => "Newest commit first",
+            Sort::Stale => "Longest since fetch first",
+            Sort::Branches => "Most local branches first",
         }
     }
 }
 
-pub fn sort_by(rows: &mut [RepoStatus], mode: Sort) {
+fn compare(mode: Sort, a: &RepoStatus, b: &RepoStatus) -> std::cmp::Ordering {
     match mode {
-        Sort::Drift => sort(rows),
-        Sort::Name => rows.sort_by(|a, b| a.display_name.cmp(&b.display_name)),
-        Sort::Recent => rows.sort_by(|a, b| {
-            b.last_commit_time
-                .cmp(&a.last_commit_time)
-                .then_with(|| a.display_name.cmp(&b.display_name))
-        }),
+        Sort::Drift => compare_drift(a, b),
+        Sort::Name => a.display_name.cmp(&b.display_name),
+        Sort::Recent => b
+            .last_commit_time
+            .cmp(&a.last_commit_time)
+            .then_with(|| a.display_name.cmp(&b.display_name)),
         // Never-fetched repos have no age at all; they sort last rather than
         // claiming to be infinitely stale.
-        Sort::Stale => rows.sort_by(|a, b| {
-            b.fetch_age
-                .cmp(&a.fetch_age)
-                .then_with(|| a.display_name.cmp(&b.display_name))
-        }),
-        Sort::Branches => rows.sort_by(|a, b| {
-            b.local_branches
-                .cmp(&a.local_branches)
-                .then_with(|| a.display_name.cmp(&b.display_name))
-        }),
+        Sort::Stale => b
+            .fetch_age
+            .cmp(&a.fetch_age)
+            .then_with(|| a.display_name.cmp(&b.display_name)),
+        Sort::Branches => b
+            .local_branches
+            .cmp(&a.local_branches)
+            .then_with(|| a.display_name.cmp(&b.display_name)),
     }
+}
+
+pub fn sort_by(rows: &mut [RepoStatus], mode: Sort) {
+    rows.sort_by(|a, b| compare(mode, a, b));
+}
+
+pub fn is_sorted_by(rows: &[RepoStatus], mode: Sort) -> bool {
+    rows.windows(2)
+        .all(|w| compare(mode, &w[0], &w[1]) != std::cmp::Ordering::Greater)
+}
+
+fn compare_drift(a: &RepoStatus, b: &RepoStatus) -> std::cmp::Ordering {
+    score(b)
+        .cmp(&score(a))
+        .then_with(|| b.last_commit_time.cmp(&a.last_commit_time))
+        .then_with(|| a.display_name.cmp(&b.display_name))
 }
 
 /// Drifted first (by score), then most recently committed first.
 pub fn sort(rows: &mut [RepoStatus]) {
-    rows.sort_by(|a, b| {
-        score(b)
-            .cmp(&score(a))
-            .then_with(|| b.last_commit_time.cmp(&a.last_commit_time))
-            .then_with(|| a.display_name.cmp(&b.display_name))
-    });
+    rows.sort_by(compare_drift);
 }
 
 #[cfg(test)]

@@ -19,8 +19,20 @@ use crate::status::RepoStatus;
 use crate::theme::{self, Facet};
 use crate::ui::state::{App, Job, Pane};
 
-/// 3 content rows (drift tally, activity, hints) plus the block's own border.
-const HEADER_HEIGHT: u16 = 5;
+/// 4 content rows (drift tally, activity, navigation hints, other hints) plus
+/// the block's own border.
+const HEADER_HEIGHT: u16 = 6;
+
+/// Below this terminal height the two hint rows share one, to leave the list room.
+const COMPACT_BELOW: u16 = 20;
+
+fn header_height(frame_height: u16) -> u16 {
+    if frame_height < COMPACT_BELOW {
+        HEADER_HEIGHT - 1
+    } else {
+        HEADER_HEIGHT
+    }
+}
 
 fn facet_style(f: Facet) -> Style {
     let mut s = Style::default().fg(f.color().to_ratatui());
@@ -225,7 +237,10 @@ pub fn draw(
     let area = frame.area();
     let rows = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(HEADER_HEIGHT), Constraint::Min(1)])
+        .constraints([
+            Constraint::Length(header_height(area.height)),
+            Constraint::Min(1),
+        ])
         .split(area);
 
     draw_header(frame, app, rows[0]);
@@ -298,7 +313,11 @@ fn draw_list(frame: &mut Frame, app: &App, area: Rect, state: &mut ListState) {
         format!("{} repositories", visible.len())
     };
     let scope = app.group().unwrap_or("all");
-    let title = format!(" {count} · {scope} · by {} ", app.sort_mode().label());
+    let stale = if app.order_stale() { " ↻ o" } else { "" };
+    let title = format!(
+        " {count} · {scope} · by {}{stale} ",
+        app.sort_mode().label()
+    );
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(theme::border_style())
@@ -780,13 +799,16 @@ fn draw_sort(frame: &mut Frame, app: &App, area: Rect) {
         .iter()
         .map(|s| {
             let active = *s == app.sort_mode();
-            let mut style = Style::default().add_modifier(Modifier::BOLD);
+            let mut style = Style::default();
             if active {
-                style = style.fg(theme::Color::Accent.to_ratatui());
+                style = style
+                    .fg(theme::Color::Accent.to_ratatui())
+                    .add_modifier(Modifier::BOLD);
             }
             Line::from(vec![
                 Span::styled(if active { "● " } else { "  " }, accent()),
-                Span::styled(s.label().to_string(), style),
+                Span::styled(format!("{:<12}", s.label()), style),
+                Span::styled(s.order().to_string(), dim()),
             ])
         })
         .collect();
@@ -881,25 +903,36 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
             ("n", "Filter by namespace"),
             (
                 "Shift+s",
-                "Open the sort picker: drift, name, recent, stale, branches",
+                "Open the sort picker: Drift, Name, Last commit, Last fetch, # Branches",
+            ),
+            (
+                "o",
+                "Re-sort now (the list otherwise keeps its order after a scan)",
             ),
             ("d", "Drifted only"),
             ("/", "Filter"),
         ],
     ),
     (
-        "List view — act",
+        "List view — mark",
         &[
-            ("Space", "Mark / unmark (actions apply to marks)"),
-            ("Shift+v", "Sweep the last mark's state to here"),
+            ("Space", "Toggle the mark and move down"),
+            ("Ctrl+Space", "Mark from the last toggled row to the cursor"),
             ("a", "Mark all visible, or clear the marks"),
+        ],
+    ),
+    (
+        "List view — act (on the marks, else the current repo)",
+        &[
             ("f / Shift+f", "Fetch marked-or-current / fetch all"),
             (
                 "p",
                 "Pull (honours your pull.rebase config), marked-or-current",
             ),
             ("Shift+x", "Prune gone branches (confirmed)"),
-            ("Enter / e", "Shell / editor in repo"),
+            ("Enter", "Shell in repo"),
+            ("l", "Open lazygit in repo"),
+            ("w", "Open the repository on the web"),
             ("Shift+d", "Diff HEAD...@{u} in your pager"),
             ("Shift+l", "Log of the incoming commits, in your pager"),
             ("Shift+m", "Diff against the default branch, in your pager"),
@@ -941,8 +974,7 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
         &[
             ("!", "Problems"),
             ("?", "This help"),
-            ("Esc / q", "Quit"),
-            ("Ctrl-C", "Quit"),
+            ("Esc / q / Ctrl-C", "Quit"),
         ],
     ),
 ];
@@ -993,29 +1025,38 @@ fn draw_help(frame: &mut Frame, app: &App, area: Rect) -> u16 {
     )
 }
 
-/// Every binding worth a reminder, in the order they are dropped when the
-/// terminal is too narrow to hold them all.
-const HINTS: &[(&str, &str)] = &[
-    ("↑↓", "move"),
+/// The list view's navigation bindings: the first hints row, dropped from the
+/// right when the terminal is too narrow to hold them all.
+const NAV_HINTS: &[(&str, &str)] = &[
+    ("↑↓ PgUp PgDn", "move"),
+    ("g / Shift+g", "first/last"),
     ("n", "namespace"),
     ("Shift+s", "sort"),
+    ("o", "re-sort"),
+    ("d", "drifted only"),
     ("/", "filter"),
-    ("Tab", "detail"),
 ];
 
-/// Pinned at the end of the hints row; never dropped for width.
+/// The second hints row; help and quit are pinned after it.
+const HINTS: &[(&str, &str)] = &[("Tab", "detail")];
+
+/// Pinned at the end of the second hints row; never dropped for width.
 const TAIL: &str = "? help | Esc quit";
 
-/// As many labelled hints as fit. Help and quit are never dropped: a
-/// truncated row must still say how to get out and where the rest is.
-fn hints_line(width: usize) -> String {
+/// As many labelled hints as fit in `width`, leaving room for `tail`.
+fn fit_hints(hints: &[(&str, &str)], tail: &str, width: usize) -> String {
     const DELIM: &str = " | ";
+    let reserved = if tail.is_empty() {
+        0
+    } else {
+        DELIM.len() + tail.len()
+    };
     let mut out = String::new();
     let mut used = 0usize;
-    for (key, label) in HINTS {
+    for (key, label) in hints {
         let piece = format!("{key} {label}");
         let extra = piece.chars().count() + if used == 0 { 0 } else { DELIM.len() };
-        if used + extra + DELIM.len() + TAIL.len() > width {
+        if used + extra + reserved > width {
             break;
         }
         if used > 0 {
@@ -1024,10 +1065,12 @@ fn hints_line(width: usize) -> String {
         out.push_str(&piece);
         used += extra;
     }
-    if used > 0 {
-        out.push_str(DELIM);
+    if !tail.is_empty() {
+        if used > 0 {
+            out.push_str(DELIM);
+        }
+        out.push_str(tail);
     }
-    out.push_str(TAIL);
     out
 }
 
@@ -1120,11 +1163,18 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
         Vec::new()
     };
 
-    let lines = vec![
+    let w = inner.width as usize;
+    let mut lines = vec![
         Line::from(drift_tally(&app.visible())),
         Line::from(activity_spans),
-        Line::from(Span::styled(hints_line(inner.width as usize), dim())),
     ];
+    if inner.height >= 4 {
+        lines.push(Line::from(Span::styled(fit_hints(NAV_HINTS, "", w), dim())));
+        lines.push(Line::from(Span::styled(fit_hints(HINTS, TAIL, w), dim())));
+    } else {
+        let all: Vec<(&str, &str)> = NAV_HINTS.iter().chain(HINTS).copied().collect();
+        lines.push(Line::from(Span::styled(fit_hints(&all, TAIL, w), dim())));
+    }
     frame.render_widget(Paragraph::new(lines), inner);
 }
 
@@ -1394,7 +1444,7 @@ mod tests {
             crossterm::event::KeyModifiers::NONE,
         ));
         assert_eq!(app.pane(), Pane::Help);
-        let out = render(120, 24, &app);
+        let out = render(120, 30, &app);
         assert!(out.contains("pull.rebase"), "{out}");
     }
 
@@ -1763,6 +1813,24 @@ mod tests {
     }
 
     #[test]
+    fn the_header_lists_every_navigation_binding_when_it_fits() {
+        let app = app_with(vec![row("a", 1)]);
+        let out = render(120, 20, &app);
+        for hint in NAV_HINTS {
+            let piece = format!("{} {}", hint.0, hint.1);
+            assert!(out.contains(&piece), "missing {piece:?}\n{out}");
+        }
+    }
+
+    #[test]
+    fn a_short_terminal_keeps_one_hints_row_with_help_and_quit() {
+        let app = app_with(vec![row("a", 1)]);
+        let out = render(120, 12, &app);
+        assert!(out.contains("? help | Esc quit"), "{out}");
+        assert!(out.contains("move"), "{out}");
+    }
+
+    #[test]
     fn every_footer_hint_is_a_key_the_help_pane_explains() {
         // Rows list key groups like "g / G"; a row whose whole key is "/" is
         // the filter key, not a separator.
@@ -1780,7 +1848,10 @@ mod tests {
         let tail_keys = TAIL
             .split(" | ")
             .filter_map(|pair| pair.split_whitespace().next());
-        let hint_keys = HINTS.iter().map(|(key, _)| *key);
+        let hint_keys = NAV_HINTS
+            .iter()
+            .chain(HINTS)
+            .flat_map(|(key, _)| key.split_whitespace().filter(|k| *k != "/" || *key == "/"));
         for key in hint_keys.chain(tail_keys) {
             assert!(
                 helped.contains(&key),

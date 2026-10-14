@@ -6,7 +6,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::discover::Problem;
 use crate::drift;
-use crate::status::RepoStatus;
+use crate::status::{Head, RepoStatus};
 use crate::ui::picker::Picker;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -22,7 +22,9 @@ pub enum Command {
     /// Only ever reached via a confirmation.
     Prune(Vec<PathBuf>),
     Shell(PathBuf),
-    Editor(PathBuf),
+    Lazygit(PathBuf),
+    /// Open the repository's page on the web; carries the checked-out branch.
+    OpenWeb(PathBuf, Option<String>),
     Diff(PathBuf),
     Log(PathBuf),
     /// Diff against the repository's default branch, resolved by the caller
@@ -140,9 +142,9 @@ pub struct App {
     pending: Option<Pending>,
     default_branches: Vec<String>,
     sort: drift::Sort,
-    /// The repository the last `Space` landed on, and whether it marked or
-    /// unmarked. Held by path so a background re-sort cannot shift it.
-    anchor: Option<(PathBuf, bool)>,
+    /// Set when a post-scan update left the rows out of `sort` order; cleared
+    /// by re-sorting. Updates never reorder the list on their own.
+    order_stale: bool,
     /// Namespace filter, chosen from the `n` picker. `None` shows every one.
     group: Option<String>,
     /// Cursor inside whichever popover is open.
@@ -158,8 +160,16 @@ pub struct App {
     pane_scroll: u16,
     /// Flips the default visibility `view.rs` picks each frame.
     detail_toggled: bool,
-    /// The repository under the cursor when a scan began, restored after it finishes.
-    pending_selection: Option<PathBuf>,
+    /// The row Space last toggled, one end of a Ctrl+Space range. Held by
+    /// path so a re-sort or a filter cannot shift it.
+    anchor: Option<PathBuf>,
+    /// Whether the running scan sorts rows as they arrive. Only a scan that
+    /// starts from an empty list does; a rescan refreshes rows in place.
+    scan_live_sort: bool,
+    /// Repositories a rescan has reported, so the ones it did not can be dropped.
+    scan_seen: BTreeSet<PathBuf>,
+    /// Re-sort once when the running rescan finishes.
+    scan_sort_after: bool,
 }
 
 impl Default for App {
@@ -185,7 +195,7 @@ impl App {
             marked: BTreeSet::new(),
             pending: None,
             sort: drift::Sort::default(),
-            anchor: None,
+            order_stale: false,
             group: None,
             picker: None,
             branch_choices: Vec::new(),
@@ -193,7 +203,10 @@ impl App {
             picker_repo: None,
             pane_scroll: 0,
             detail_toggled: false,
-            pending_selection: None,
+            anchor: None,
+            scan_live_sort: true,
+            scan_seen: BTreeSet::new(),
+            scan_sort_after: false,
             default_branches: crate::theme::DEFAULT_BRANCHES
                 .iter()
                 .map(|s| (*s).to_string())
@@ -205,16 +218,48 @@ impl App {
 
     // --- ingestion -------------------------------------------------------
 
-    /// Insert or replace a repository's status, keeping the list ordered.
+    /// Insert or replace a repository's status. Only the first scan, which
+    /// starts from an empty list, orders rows as they arrive; every other
+    /// update leaves them where they are until `resort`, so nothing moves
+    /// under the cursor.
     pub fn push_status(&mut self, s: RepoStatus) {
+        if self.is_scanning() {
+            self.scan_seen.insert(s.path.clone());
+        }
         match self.rows.iter_mut().find(|r| r.path == s.path) {
             Some(existing) => *existing = s,
             None => self.rows.push(s),
         }
-        drift::sort_by(&mut self.rows, self.sort);
+        if self.is_scanning() && self.scan_live_sort {
+            drift::sort_by(&mut self.rows, self.sort);
+        } else if !self.is_scanning() {
+            self.order_stale = !drift::is_sorted_by(&self.rows, self.sort);
+        }
         self.clamp_selection();
         if let Some(id) = self.scan_job {
             self.advance_job(id);
+        }
+    }
+
+    /// Whether rows have drifted out of the sort order since it was applied.
+    pub fn order_stale(&self) -> bool {
+        self.order_stale
+    }
+
+    /// Re-sort now, keeping the cursor on the same repository.
+    fn resort(&mut self) -> Command {
+        self.sort_keeping_cursor();
+        self.detail_command()
+    }
+
+    fn sort_keeping_cursor(&mut self) {
+        let keep = self.selected_path();
+        drift::sort_by(&mut self.rows, self.sort);
+        self.order_stale = false;
+        if let Some(path) = keep {
+            if let Some(i) = self.visible().iter().position(|r| r.path == path) {
+                self.selected = i;
+            }
         }
     }
 
@@ -224,16 +269,20 @@ impl App {
 
     /// Marks survive a rescan — a rescan is a refresh, not a reset. Marks for
     /// repositories that have gone away are dropped once the scan completes.
-    pub fn begin_scan(&mut self) {
-        self.pending_selection = self.selected().map(|r| r.path.clone());
+    ///
+    /// A rescan refreshes rows in place: rows keep their positions, new
+    /// repositories land at the bottom and vanished ones go when it finishes.
+    /// `sort_after` asks for one re-sort at the end, for a rescan the user
+    /// started; a rescan started by anything else leaves the order alone.
+    pub fn begin_scan(&mut self, sort_after: bool) {
         if let Some(id) = self.scan_job.take() {
             self.end_job(id);
         }
         self.scan_job = Some(self.begin_job("scanning", 0));
-        self.rows.clear();
+        self.scan_live_sort = self.rows.is_empty();
+        self.scan_sort_after = sort_after;
+        self.scan_seen.clear();
         self.problems.clear();
-        self.selected = 0;
-        self.anchor = None;
         if self.picker.is_some() {
             self.close_picker();
         }
@@ -243,14 +292,23 @@ impl App {
         if let Some(id) = self.scan_job.take() {
             self.end_job(id);
         }
+        if !self.scan_live_sort {
+            let keep = self.selected_path();
+            let seen = std::mem::take(&mut self.scan_seen);
+            self.rows.retain(|r| seen.contains(&r.path));
+            self.selected = keep
+                .and_then(|p| self.visible().iter().position(|r| r.path == p))
+                .unwrap_or(0);
+            if self.scan_sort_after {
+                self.sort_keeping_cursor();
+            }
+            self.order_stale = !drift::is_sorted_by(&self.rows, self.sort);
+        }
+        self.scan_live_sort = true;
+        self.scan_sort_after = false;
+        self.clamp_selection();
         let present: BTreeSet<&PathBuf> = self.rows.iter().map(|r| &r.path).collect();
         self.marked.retain(|p| present.contains(p));
-        // A rescan is a refresh: the cursor belongs to a repository, not an index.
-        if let Some(path) = self.pending_selection.take() {
-            if let Some(i) = self.visible().iter().position(|r| r.path == path) {
-                self.selected = i;
-            }
-        }
     }
 
     pub fn is_scanning(&self) -> bool {
@@ -380,7 +438,6 @@ impl App {
         };
         self.close_picker();
         self.selected = 0;
-        self.anchor = None;
         self.clamp_selection();
         self.detail_command()
     }
@@ -397,9 +454,9 @@ impl App {
     fn choose_sort(&mut self) -> Command {
         self.sort = drift::Sort::ALL[self.picker_index()];
         drift::sort_by(&mut self.rows, self.sort);
+        self.order_stale = false;
         self.close_picker();
         self.selected = 0;
-        self.anchor = None;
         self.clamp_selection();
         self.detail_command()
     }
@@ -632,35 +689,26 @@ impl App {
         self.pending.as_ref()
     }
 
-    fn toggle_mark(&mut self) {
+    /// Space: toggles the row under the cursor and steps down.
+    fn toggle_mark(&mut self) -> Command {
         if let Some(path) = self.selected_path() {
-            let now_marked = !self.marked.remove(&path);
-            if now_marked {
-                self.marked.insert(path);
+            if !self.marked.remove(&path) {
+                self.marked.insert(path.clone());
             }
-            self.anchor = self.selected_path().map(|p| (p, now_marked));
+            self.anchor = Some(path);
         }
+        self.move_by(1)
     }
 
-    /// Sweeps the anchor's own outcome (mark or unmark) across the range.
-    /// The anchor is a repository, not an index: a background refresh re-sorts
-    /// the list, and an index would then point at a different row.
+    /// Ctrl+Space: marks every visible row from the anchor to the cursor,
+    /// inclusive; with no visible anchor, just the cursor row.
     fn mark_range(&mut self) {
-        let (anchor, mark) = match &self.anchor {
-            Some((path, mark)) => (
-                self.visible()
-                    .iter()
-                    .position(|r| r.path == *path)
-                    .unwrap_or(self.selected),
-                *mark,
-            ),
-            None => (self.selected, true),
-        };
-        let (lo, hi) = if anchor <= self.selected {
-            (anchor, self.selected)
-        } else {
-            (self.selected, anchor)
-        };
+        let from = self
+            .anchor
+            .as_ref()
+            .and_then(|a| self.visible().iter().position(|r| r.path == *a))
+            .unwrap_or(self.selected);
+        let (lo, hi) = (from.min(self.selected), from.max(self.selected));
         let paths: Vec<PathBuf> = self
             .visible()
             .get(lo..=hi)
@@ -668,14 +716,8 @@ impl App {
             .iter()
             .map(|r| r.path.clone())
             .collect();
-        for p in paths {
-            if mark {
-                self.marked.insert(p);
-            } else {
-                self.marked.remove(&p);
-            }
-        }
-        self.anchor = self.selected_path().map(|p| (p, mark));
+        self.marked.extend(paths);
+        self.anchor = self.selected_path();
     }
 
     /// Mark every visible row, or clear the marks if there are any. One key
@@ -687,7 +729,6 @@ impl App {
         } else {
             self.marked.clear();
         }
-        self.anchor = None;
     }
 
     /// What an action applies to: every marked repository still visible, or
@@ -775,9 +816,19 @@ impl App {
         // Anything else held down makes this a different key than the one
         // bound: Ctrl-P is not `p`, and Ctrl-W is not a `w` to type into the
         // filter. Shift is excluded — it is how the uppercase keys arrive.
-        if key.modifiers.intersects(
-            KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER | KeyModifiers::META,
-        ) {
+        // The one exception is Ctrl-Space on the list, which marks a range.
+        let range_chord = !self.filtering
+            && self.pane == Pane::List
+            && key.code == KeyCode::Char(' ')
+            && key.modifiers == KeyModifiers::CONTROL;
+        if !range_chord
+            && key.modifiers.intersects(
+                KeyModifiers::CONTROL
+                    | KeyModifiers::ALT
+                    | KeyModifiers::SUPER
+                    | KeyModifiers::META,
+            )
+        {
             return Command::None;
         }
         if self.filtering {
@@ -803,7 +854,6 @@ impl App {
             }
             KeyCode::Char('d') => {
                 self.drifted_only = !self.drifted_only;
-                self.anchor = None;
                 self.clamp_selection();
                 self.detail_command()
             }
@@ -827,20 +877,17 @@ impl App {
                 Command::None
             }
             KeyCode::Char('F') => Command::FetchAll,
-            KeyCode::Char(' ') => {
-                self.toggle_mark();
+            KeyCode::Char(' ') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.mark_range();
                 Command::None
             }
+            KeyCode::Char(' ') => self.toggle_mark(),
             KeyCode::Char('J') => {
                 self.scroll_pane(1);
                 Command::None
             }
             KeyCode::Char('K') => {
                 self.scroll_pane(-1);
-                Command::None
-            }
-            KeyCode::Char('V') => {
-                self.mark_range();
                 Command::None
             }
             KeyCode::Char('a') => {
@@ -862,7 +909,6 @@ impl App {
                 let command = self.act(Command::Pull);
                 if had_marks && !matches!(command, Command::None) {
                     self.marked.clear();
-                    self.anchor = None;
                 }
                 command
             }
@@ -870,7 +916,15 @@ impl App {
             // must not reach it. It then waits on a confirmation.
             KeyCode::Char('X') => self.confirm(Destructive::Prune),
             KeyCode::Enter => self.selected_path().map_or(Command::None, Command::Shell),
-            KeyCode::Char('e') => self.selected_path().map_or(Command::None, Command::Editor),
+            KeyCode::Char('l') => self.selected_path().map_or(Command::None, Command::Lazygit),
+            KeyCode::Char('w') => self.selected().map_or(Command::None, |r| {
+                let branch = match &r.head {
+                    Head::Branch(b) => Some(b.clone()),
+                    _ => None,
+                };
+                Command::OpenWeb(r.path.clone(), branch)
+            }),
+            KeyCode::Char('o') => self.resort(),
             KeyCode::Char('D') => self.upstream_target().map_or(Command::None, Command::Diff),
             KeyCode::Char('L') => self.upstream_target().map_or(Command::None, Command::Log),
             KeyCode::Char('M') => self
@@ -1043,7 +1097,6 @@ impl App {
             KeyCode::Esc => {
                 self.filtering = false;
                 self.filter.clear();
-                self.anchor = None;
                 self.clamp_selection();
                 self.detail_command()
             }
@@ -1054,14 +1107,12 @@ impl App {
             KeyCode::Backspace => {
                 self.filter.pop();
                 self.selected = 0;
-                self.anchor = None;
                 self.clamp_selection();
                 self.detail_command()
             }
             KeyCode::Char(c) => {
                 self.filter.push(c);
                 self.selected = 0;
-                self.anchor = None;
                 self.clamp_selection();
                 self.detail_command()
             }
@@ -1174,6 +1225,46 @@ mod tests {
     }
 
     #[test]
+    fn a_status_update_after_the_scan_leaves_the_order_alone_until_asked() {
+        let mut app = app_with(vec![row("a", 1), row("b", 1), row("c", 1)]);
+        app.on_key(code(KeyCode::Down)); // b
+        app.push_status(RepoStatus {
+            behind: 3,
+            ..row("c", 1)
+        });
+        let names = |app: &App| -> Vec<String> {
+            app.visible()
+                .iter()
+                .map(|r| r.display_name.clone())
+                .collect()
+        };
+        assert_eq!(names(&app), vec!["a", "b", "c"], "no automatic re-sort");
+        assert!(app.order_stale());
+
+        app.on_key(key('o'));
+        assert_eq!(names(&app), vec!["c", "a", "b"]);
+        assert!(!app.order_stale());
+        assert_eq!(app.selected().unwrap().display_name, "b", "cursor follows");
+    }
+
+    #[test]
+    fn w_opens_the_repository_on_the_web_at_its_checked_out_branch() {
+        let mut app = app_with(vec![row("a", 1)]);
+        let p = app.selected().unwrap().path.clone();
+        assert_eq!(
+            app.on_key(key('w')),
+            Command::OpenWeb(p, Some("main".into()))
+        );
+    }
+
+    #[test]
+    fn l_opens_lazygit_on_the_selected_repository() {
+        let mut app = app_with(vec![row("a", 1)]);
+        let p = app.selected().unwrap().path.clone();
+        assert_eq!(app.on_key(key('l')), Command::Lazygit(p));
+    }
+
+    #[test]
     fn filter_narrows_by_substring_and_escape_clears_it() {
         let mut app = app_with(vec![row("sre/alpha", 1), row("platform/beta", 1)]);
         app.on_key(key('/'));
@@ -1224,7 +1315,6 @@ mod tests {
         assert_eq!(app.on_key(key('f')), Command::Fetch(vec![p.clone()]));
         assert_eq!(app.on_key(key('p')), Command::Pull(vec![p.clone()]));
         assert_eq!(app.on_key(code(KeyCode::Enter)), Command::Shell(p.clone()));
-        assert_eq!(app.on_key(key('e')), Command::Editor(p));
         assert_eq!(app.on_key(key('s')), Command::OpenStashes);
         assert_eq!(
             app.on_key(KeyEvent::new(KeyCode::Char('F'), KeyModifiers::SHIFT)),
@@ -1321,16 +1411,73 @@ mod tests {
         assert_eq!(app.filter_text(), None);
     }
 
+    fn ctrl_space() -> KeyEvent {
+        KeyEvent::new(KeyCode::Char(' '), KeyModifiers::CONTROL)
+    }
+
+    fn marked_names(app: &App) -> Vec<String> {
+        app.visible()
+            .iter()
+            .filter(|r| app.is_marked(&r.path))
+            .map(|r| r.display_name.clone())
+            .collect()
+    }
+
     #[test]
-    fn space_marks_and_unmarks_the_selected_row() {
-        let mut app = app_with(vec![row("a", 1), row("b", 1)]);
-        let p = app.selected().unwrap().path.clone();
+    fn space_toggles_the_row_and_moves_down() {
+        let mut app = app_with(vec![row("a", 1), row("b", 1), row("c", 1)]);
         app.on_key(key(' '));
-        assert!(app.is_marked(&p));
-        assert_eq!(app.marked_count(), 1);
         app.on_key(key(' '));
-        assert!(!app.is_marked(&p));
-        assert_eq!(app.marked_count(), 0);
+        assert_eq!(marked_names(&app), vec!["a", "b"]);
+        assert_eq!(app.selected().unwrap().display_name, "c");
+        app.on_key(code(KeyCode::Up));
+        app.on_key(code(KeyCode::Up));
+        app.on_key(key(' '));
+        assert_eq!(marked_names(&app), vec!["b"], "a toggled off");
+    }
+
+    #[test]
+    fn ctrl_space_marks_from_the_last_toggled_row_to_the_cursor() {
+        let mut app = app_with(vec![row("a", 1), row("b", 1), row("c", 1), row("d", 1)]);
+        app.on_key(code(KeyCode::Down)); // b
+        app.on_key(key(' ')); // marks b, cursor on c
+        app.on_key(code(KeyCode::Down)); // d
+        app.on_key(ctrl_space());
+        assert_eq!(marked_names(&app), vec!["b", "c", "d"]);
+    }
+
+    #[test]
+    fn a_range_works_upwards_and_without_an_anchor_marks_the_cursor_row() {
+        let mut app = app_with(vec![row("a", 1), row("b", 1), row("c", 1)]);
+        app.on_key(code(KeyCode::Down));
+        app.on_key(ctrl_space());
+        assert_eq!(marked_names(&app), vec!["b"]);
+        app.on_key(code(KeyCode::Up)); // a
+        app.on_key(ctrl_space());
+        assert_eq!(marked_names(&app), vec!["a", "b"]);
+    }
+
+    #[test]
+    fn a_range_follows_its_anchor_through_a_re_sort() {
+        let mut app = app_with(vec![row("a", 1), row("b", 1), row("c", 1)]);
+        app.on_key(key(' ')); // anchor a
+        app.push_status(RepoStatus {
+            behind: 3,
+            ..row("c", 1)
+        });
+        app.on_key(key('o')); // c, a, b
+        app.on_key(code(KeyCode::Down));
+        app.on_key(code(KeyCode::Down)); // b
+        app.on_key(ctrl_space());
+        assert_eq!(marked_names(&app), vec!["a", "b"]);
+    }
+
+    #[test]
+    fn ctrl_space_is_not_a_space_typed_into_the_filter() {
+        let mut app = app_with(vec![row("a b", 1)]);
+        app.on_key(key('/'));
+        app.on_key(ctrl_space());
+        assert_eq!(app.filter_text(), Some(""));
     }
 
     #[test]
@@ -1370,7 +1517,7 @@ mod tests {
         let mut app = app_with(vec![row("a", 1)]);
         app.on_key(key(' '));
         assert_eq!(app.marked_count(), 1);
-        app.begin_scan();
+        app.begin_scan(false);
         app.push_status(row("a", 1));
         app.finish_scan();
         assert_eq!(app.marked_count(), 1, "a refresh is not a reset");
@@ -1380,7 +1527,7 @@ mod tests {
     fn a_mark_is_dropped_when_the_repository_is_gone_after_a_rescan() {
         let mut app = app_with(vec![row("a", 1)]);
         app.on_key(key(' '));
-        app.begin_scan();
+        app.begin_scan(false);
         app.push_status(row("b", 1));
         app.finish_scan();
         assert_eq!(app.marked_count(), 0);
@@ -1415,18 +1562,6 @@ mod tests {
     }
 
     #[test]
-    fn only_uppercase_v_marks_a_range() {
-        let mut app = app_with(vec![row("a", 1), row("b", 1), row("c", 1)]);
-        app.on_key(key(' '));
-        app.on_key(code(KeyCode::Down));
-        app.on_key(code(KeyCode::Down));
-        app.on_key(key('v'));
-        assert_eq!(app.marked_count(), 1, "lowercase v is not a binding");
-        app.on_key(key('V'));
-        assert_eq!(app.marked_count(), 3);
-    }
-
-    #[test]
     fn only_lowercase_y_confirms_a_destructive_action() {
         for c in ['Y', 'n', 'x', '\n'] {
             let mut app = app_with(vec![row("a", 1)]);
@@ -1453,112 +1588,6 @@ mod tests {
     }
 
     #[test]
-    fn v_marks_the_range_from_the_last_mark_to_the_cursor() {
-        let mut app = app_with(vec![row("a", 1), row("b", 1), row("c", 1), row("d", 1)]);
-        app.on_key(key(' '));
-        app.on_key(code(KeyCode::Down));
-        app.on_key(code(KeyCode::Down));
-        assert_eq!(app.marked_count(), 1, "only the anchor is marked so far");
-        app.on_key(key('V'));
-        assert_eq!(app.marked_count(), 3, "anchor through cursor, inclusive");
-    }
-
-    #[test]
-    fn a_range_mark_works_upwards_too() {
-        let mut app = app_with(vec![row("a", 1), row("b", 1), row("c", 1)]);
-        app.on_key(code(KeyCode::Down));
-        app.on_key(code(KeyCode::Down));
-        app.on_key(key(' '));
-        app.on_key(code(KeyCode::Up));
-        app.on_key(code(KeyCode::Up));
-        app.on_key(key('V'));
-        assert_eq!(app.marked_count(), 3);
-    }
-
-    #[test]
-    fn a_range_takes_the_state_the_anchor_landed_in() {
-        let mut app = app_with(vec![row("a", 1), row("b", 1), row("c", 1), row("d", 1)]);
-        app.on_key(key('a')); // mark all four
-        assert_eq!(app.marked_count(), 4);
-
-        app.on_key(code(KeyCode::Down)); // row b
-        app.on_key(key(' ')); // unmarks b, anchor = (1, false)
-        app.on_key(code(KeyCode::Down)); // row c
-        app.on_key(KeyEvent::new(KeyCode::Char('V'), KeyModifiers::SHIFT));
-
-        let marked: Vec<&str> = app
-            .visible()
-            .iter()
-            .filter(|r| app.is_marked(&r.path))
-            .map(|r| r.display_name.as_str())
-            .collect();
-        assert_eq!(marked, vec!["a", "d"], "b..c should have been swept clear");
-    }
-
-    #[test]
-    fn a_sweep_follows_its_repository_when_a_refresh_re_sorts_the_list() {
-        // A fetch pushes each row's fresh status as it lands, which re-sorts the
-        // list mid-selection, so the anchor must not be a row index.
-        let mut app = app_with(vec![row("a", 1), row("b", 1), row("c", 1), row("d", 1)]);
-        app.on_key(key('a'));
-
-        app.on_key(code(KeyCode::Down)); // b
-        app.on_key(key(' ')); // unmark b, anchor = b
-
-        // "d" turns out to have diverged and sorts to the top, shifting
-        // every other row down one.
-        app.push_status(RepoStatus {
-            behind: 3,
-            ..row("d", 1)
-        });
-        let names: Vec<&str> = app
-            .visible()
-            .iter()
-            .map(|r| r.display_name.as_str())
-            .collect();
-        assert_eq!(
-            names,
-            vec!["d", "a", "b", "c"],
-            "fixture must actually re-sort"
-        );
-
-        app.on_key(code(KeyCode::Down));
-        app.on_key(code(KeyCode::Down)); // c
-        app.on_key(KeyEvent::new(KeyCode::Char('V'), KeyModifiers::SHIFT));
-
-        let marked: Vec<&str> = app
-            .visible()
-            .iter()
-            .filter(|r| app.is_marked(&r.path))
-            .map(|r| r.display_name.as_str())
-            .collect();
-        assert_eq!(
-            marked,
-            vec!["d", "a"],
-            "only b..c should have been swept clear"
-        );
-    }
-
-    #[test]
-    fn a_range_still_marks_when_the_anchor_was_marked() {
-        let mut app = app_with(vec![row("a", 1), row("b", 1), row("c", 1)]);
-        app.on_key(key(' ')); // marks a, anchor = (0, true)
-        app.on_key(code(KeyCode::Down));
-        app.on_key(code(KeyCode::Down)); // row c
-        app.on_key(KeyEvent::new(KeyCode::Char('V'), KeyModifiers::SHIFT));
-        assert_eq!(app.marked_count(), 3);
-    }
-
-    #[test]
-    fn a_range_with_no_anchor_marks_only_the_current_row() {
-        let mut app = app_with(vec![row("a", 1), row("b", 1), row("c", 1)]);
-        app.on_key(code(KeyCode::Down));
-        app.on_key(KeyEvent::new(KeyCode::Char('V'), KeyModifiers::SHIFT));
-        assert_eq!(app.marked_count(), 1);
-        assert!(app.is_marked(&app.visible()[1].path));
-    }
-
-    #[test]
     fn a_marks_everything_visible_and_marks_again_to_clear() {
         let mut app = app_with(vec![row("a", 1), row("b", 1), row("c", 1)]);
         app.on_key(key('a'));
@@ -1574,33 +1603,6 @@ mod tests {
         assert_eq!(app.marked_count(), 1);
         app.on_key(key('a'));
         assert_eq!(app.marked_count(), 0, "anything marked means a clears");
-    }
-
-    #[test]
-    fn a_range_mark_does_not_reuse_an_index_from_a_different_filter() {
-        let mut app = app_with(vec![
-            row("alpha", 1),
-            row("beta", 1),
-            row("gamma", 1),
-            row("widget", 1),
-        ]);
-        for _ in 0..3 {
-            app.on_key(code(KeyCode::Down));
-        }
-        app.on_key(key(' '));
-
-        app.on_key(key('/'));
-        app.on_key(key('a'));
-        app.on_key(code(KeyCode::Enter));
-        assert_eq!(app.visible().len(), 3, "widget has no 'a'");
-
-        app.on_key(code(KeyCode::Down));
-        app.on_key(key('V'));
-        assert_eq!(
-            app.marked_count(),
-            2,
-            "the stale index is dropped; V just marks the row under the cursor"
-        );
     }
 
     #[test]
@@ -1847,10 +1849,10 @@ mod tests {
     }
 
     #[test]
-    fn begin_scan_clears_previous_results() {
+    fn a_rescan_keeps_rows_on_screen_while_it_runs() {
         let mut app = app_with(vec![row("a", 1)]);
-        app.begin_scan();
-        assert!(app.visible().is_empty());
+        app.begin_scan(false);
+        assert_eq!(app.visible().len(), 1);
         assert!(app.is_scanning());
     }
 
@@ -1880,7 +1882,7 @@ mod tests {
     #[test]
     fn scanning_is_a_job_that_counts_the_rows_it_finds() {
         let mut app = App::new();
-        app.begin_scan();
+        app.begin_scan(false);
         assert!(app.is_scanning());
         app.push_status(row("a", 1));
         let scan = app.jobs().iter().find(|j| j.label == "scanning").unwrap();
@@ -1901,7 +1903,7 @@ mod tests {
         app.on_key(code(KeyCode::Down));
         let before = app.selected().unwrap().path.clone();
 
-        app.begin_scan();
+        app.begin_scan(false);
         // The scan comes back in a different order; the cursor follows the repo.
         app.push_status(row("gamma", 1));
         app.push_status(row("alpha", 1));
@@ -1916,7 +1918,7 @@ mod tests {
         let mut app = app_with(vec![row("alpha", 1), row("beta", 1)]);
         app.on_key(code(KeyCode::Down));
 
-        app.begin_scan();
+        app.begin_scan(false);
         app.push_status(row("alpha", 1));
         app.finish_scan();
 
@@ -2177,10 +2179,12 @@ mod tests {
         assert_eq!(app.pane(), Pane::List);
     }
 
-    /// A refresh landing while a popover is up re-sorts the list under it, so
-    /// the row at the cursor is no longer the repository the popover lists.
+    /// A re-sort while a popover is up moves the row under the cursor, so it
+    /// is no longer the repository the popover lists.
     fn slide_cursor_off(app: &mut App, away_from: &std::path::Path) {
         app.push_status(row("b", 9));
+        app.rows.sort_by(|a, b| b.display_name.cmp(&a.display_name));
+        app.selected = 0;
         assert_ne!(
             app.selected().unwrap().path,
             away_from,
@@ -2239,13 +2243,75 @@ mod tests {
         );
     }
 
+    fn names(app: &App) -> Vec<String> {
+        app.visible()
+            .iter()
+            .map(|r| r.display_name.clone())
+            .collect()
+    }
+
+    fn rescan(app: &mut App, sort_after: bool, rows: Vec<RepoStatus>) {
+        app.begin_scan(sort_after);
+        for r in rows {
+            app.push_status(r);
+        }
+        app.finish_scan();
+    }
+
+    #[test]
+    fn a_rescan_refreshes_in_place_appends_new_repos_and_drops_vanished_ones() {
+        let mut app = app_with(vec![row("a", 3), row("b", 2), row("c", 1)]);
+        let behind = RepoStatus {
+            behind: 9,
+            ..row("c", 1)
+        };
+        rescan(&mut app, false, vec![behind, row("d", 0), row("a", 3)]);
+        assert_eq!(names(&app), vec!["a", "c", "d"], "b dropped, d appended");
+        assert!(app.order_stale(), "c now outranks a");
+    }
+
+    #[test]
+    fn a_rescan_the_user_asked_for_sorts_once_at_the_end() {
+        let mut app = app_with(vec![row("a", 1), row("b", 1), row("c", 1)]);
+        app.on_key(code(KeyCode::Down));
+        app.on_key(code(KeyCode::Down)); // c
+        let c_now_behind = RepoStatus {
+            behind: 9,
+            ..row("c", 1)
+        };
+        app.begin_scan(true);
+        app.push_status(row("a", 1));
+        app.push_status(c_now_behind);
+        assert_eq!(
+            names(&app),
+            vec!["a", "b", "c"],
+            "no movement while it runs"
+        );
+        app.push_status(row("b", 1));
+        app.finish_scan();
+        assert_eq!(names(&app), vec!["c", "a", "b"]);
+        assert!(!app.order_stale());
+        assert_eq!(app.selected().unwrap().display_name, "c", "cursor follows");
+    }
+
+    #[test]
+    fn a_rescan_nobody_asked_to_sort_leaves_the_order_alone() {
+        let mut app = app_with(vec![row("a", 1), row("b", 1)]);
+        let b_behind = RepoStatus {
+            behind: 9,
+            ..row("b", 1)
+        };
+        rescan(&mut app, false, vec![row("a", 1), b_behind]);
+        assert_eq!(names(&app), vec!["a", "b"]);
+    }
+
     #[test]
     fn a_rescan_closes_an_open_popover() {
         let mut app = app_with(vec![row("a", 0)]);
         let path = app.selected().unwrap().path.clone();
         app.open_stash_picker(path, vec![stash(0, "wip")]);
         assert_eq!(app.pane(), Pane::Stashes);
-        app.begin_scan();
+        app.begin_scan(false);
         assert_eq!(app.pane(), Pane::List, "the list it described is gone");
     }
 }

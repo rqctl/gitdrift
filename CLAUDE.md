@@ -38,9 +38,10 @@ rather than reasoning about whether a change was safe.
 
 **Reads use `gix`; every mutation shells out to the `git` binary.** Shelling
 out preserves the user's SSH keys, credential helpers and `insteadOf` rules,
-which no in-process implementation gets for free. The one deliberate
-exception is `git diff --numstat` in `detail.rs`: a read, but not one `gix`
-exposes conveniently.
+which no in-process implementation gets for free. The deliberate
+exceptions are `git diff --numstat` in `detail.rs`, a read `gix` does not expose
+conveniently, and the remote lookup behind `w` in `actions.rs`, which goes
+through `git remote get-url` so that `insteadOf` rewrites apply.
 
 **`src/ui/state.rs` must not import `crate::detail`.** It is a pure state
 machine, testable without a terminal or a repository. Data the popovers need
@@ -48,7 +49,8 @@ is handed in by the event loop as `BranchChoice` / `StashChoice`.
 
 **One key, one binding.** In `App::on_key` the Ctrl-C check and the modifier
 guard (rejecting Ctrl/Alt/Super/Meta) are the first two statements, so a
-chord can never fall through to a plain-key branch.
+chord can never fall through to a plain-key branch. The one exception is
+Ctrl+Space on the list pane (range mark), named in the guard itself.
 
 **Meaning survives `NO_COLOR`.** Every colour is paired with a unique glyph —
 there is a test enforcing glyph uniqueness — and the selection cursor is a

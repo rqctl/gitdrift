@@ -105,7 +105,6 @@ pub fn run(opts: ScanOptions, cfg: &Config, drifted_only: bool) -> anyhow::Resul
         detail_area: None,
         generation: 0,
         list_state: ListState::default(),
-        rescan_after: None,
     };
 
     let result = event_loop(&mut term, &mut app, cfg, &opts, &tx, &rx, &mut loop_state);
@@ -126,8 +125,6 @@ struct LoopState {
     detail_area: Option<ratatui::layout::Rect>,
     generation: u64,
     list_state: ListState,
-    /// The job whose completion owes a full rescan, set by fetch-all.
-    rescan_after: Option<u64>,
 }
 
 fn event_loop(
@@ -171,9 +168,17 @@ fn event_loop(
                 Msg::JobStep(id) => app.advance_job(id),
                 Msg::JobEnd(id) => {
                     app.end_job(id);
-                    if ls.rescan_after == Some(id) {
-                        ls.rescan_after = None;
-                        do_rescan(app, ls, opts, tx);
+                    if app.order_stale() {
+                        if let Some(done) = app
+                            .toast()
+                            .filter(|t| !t.contains("order changed"))
+                            .map(str::to_string)
+                        {
+                            app.set_toast(
+                                format!("{done}  ·  order changed, o to re-sort"),
+                                TOAST_TTL,
+                            );
+                        }
                     }
                 }
             }
@@ -217,7 +222,7 @@ fn event_loop(
             Command::None => {}
             Command::Quit => return Ok(()),
             Command::LoadDetail(path) => request_detail(ls, tx, path),
-            Command::Rescan => do_rescan(app, ls, opts, tx),
+            Command::Rescan => do_rescan(app, ls, opts, tx, true),
             Command::Fetch(paths) => {
                 let targets = named(app, paths);
                 let job = app.begin_job("fetching", targets.len());
@@ -227,7 +232,6 @@ fn event_loop(
                 let paths: Vec<PathBuf> = app.visible().iter().map(|r| r.path.clone()).collect();
                 let targets = named(app, paths);
                 let job = app.begin_job("fetching", targets.len());
-                ls.rescan_after = Some(job);
                 spawn_fetch(targets, cfg.concurrency, job, tx.clone());
             }
             Command::Pull(paths) => {
@@ -272,14 +276,22 @@ fn event_loop(
                 refresh_one(app, &path, &name);
                 sync_detail_after_status_change(app, ls, tx, path);
             }
-            Command::Editor(path) => {
+            Command::Lazygit(_) if !actions::lazygit_on_path() => {
+                app.set_toast("lazygit not found on PATH", TOAST_TTL);
+            }
+            Command::Lazygit(path) => {
                 let name = display_name_of(app, &path);
-                let editor = actions::resolve_editor(cfg.editor.as_deref());
-                if let Err(e) = suspend(term, || actions::open_editor(&path, &editor))? {
+                if let Err(e) = suspend(term, || actions::open_lazygit(&path))? {
                     app.set_toast(e.to_string(), TOAST_TTL);
                 }
                 refresh_one(app, &path, &name);
                 sync_detail_after_status_change(app, ls, tx, path);
+            }
+            Command::OpenWeb(path, branch) => {
+                match actions::open_on_web(&path, branch.as_deref()) {
+                    Ok(url) => app.set_toast(format!("opening {url}"), TOAST_TTL),
+                    Err(e) => app.set_toast(e.to_string(), TOAST_TTL),
+                }
             }
             Command::Diff(path) => {
                 if let Err(e) = suspend(term, || actions::view_diff(&path))? {
@@ -398,8 +410,16 @@ fn event_loop(
     }
 }
 
-fn do_rescan(app: &mut App, ls: &mut LoopState, opts: &ScanOptions, tx: &mpsc::Sender<Msg>) {
-    app.begin_scan();
+/// `sort_after` is for a rescan the user asked for; any other caller passes
+/// `false` so the list does not move under the cursor.
+fn do_rescan(
+    app: &mut App,
+    ls: &mut LoopState,
+    opts: &ScanOptions,
+    tx: &mpsc::Sender<Msg>,
+    sort_after: bool,
+) {
+    app.begin_scan(sort_after);
     ls.current_detail = None;
     ls.detail_pending = None;
     ls.generation += 1;
