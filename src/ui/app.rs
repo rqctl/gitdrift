@@ -19,6 +19,7 @@ use ratatui::Terminal;
 use crate::actions;
 use crate::config::Config;
 use crate::detail::{self, RepoDetail};
+use crate::drift::is_drifted;
 use crate::scan::{self, Event as ScanEvent, ScanOptions};
 use crate::status::{self, RepoStatus};
 use crate::ui::state::{App, BranchChoice, Command, StashChoice};
@@ -252,6 +253,24 @@ fn event_loop(
                 } else if !ready.is_empty() {
                     app.set_toast(format!("pulling {} repositories…", ready.len()), TOAST_TTL);
                 }
+                for sel in ready {
+                    spawn_pull(sel.path.clone(), sel, tx.clone());
+                }
+            }
+            Command::PullAll => {
+                let mut ready = Vec::new();
+                let mut skipped = 0;
+                for row in app.visible().iter().filter(|r| is_drifted(r)) {
+                    match actions::can_pull(row) {
+                        Ok(()) => ready.push((*row).clone()),
+                        Err(_) => skipped += 1,
+                    }
+                }
+                let mut msg = format!("pulling {} repositories…", ready.len());
+                if skipped > 0 {
+                    msg.push_str(&format!("  ·  {skipped} skipped (dirty or no upstream)"));
+                }
+                app.set_toast(msg, TOAST_TTL);
                 for sel in ready {
                     spawn_pull(sel.path.clone(), sel, tx.clone());
                 }

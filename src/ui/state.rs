@@ -18,6 +18,7 @@ pub enum Command {
     Fetch(Vec<PathBuf>),
     FetchAll,
     Pull(Vec<PathBuf>),
+    PullAll,
     /// Prune remote refs, then delete local branches whose upstream is gone.
     /// Only ever reached via a confirmation.
     Prune(Vec<PathBuf>),
@@ -877,6 +878,7 @@ impl App {
                 Command::None
             }
             KeyCode::Char('F') => Command::FetchAll,
+            KeyCode::Char('P') => Command::PullAll,
             KeyCode::Char(' ') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.mark_range();
                 Command::None
@@ -1319,6 +1321,10 @@ mod tests {
         assert_eq!(
             app.on_key(KeyEvent::new(KeyCode::Char('F'), KeyModifiers::SHIFT)),
             Command::FetchAll
+        );
+        assert_eq!(
+            app.on_key(KeyEvent::new(KeyCode::Char('P'), KeyModifiers::SHIFT)),
+            Command::PullAll
         );
         assert_eq!(app.on_key(key('r')), Command::Rescan);
         assert_eq!(app.on_key(key('q')), Command::Quit);

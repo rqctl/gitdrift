@@ -926,8 +926,8 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
         &[
             ("f / Shift+f", "Fetch marked-or-current / fetch all"),
             (
-                "p",
-                "Pull (honours your pull.rebase config), marked-or-current",
+                "p / Shift+p",
+                "Pull (honours your pull.rebase config), marked-or-current / all drifted",
             ),
             ("Shift+x", "Prune gone branches (confirmed)"),
             ("Enter", "Shell in repo"),
