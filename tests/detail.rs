@@ -8,7 +8,7 @@ fn lists_local_branches_and_marks_head() {
     let r = TestRepo::new();
     r.commit("a", "1", "one");
     r.git(&["branch", "feature"]);
-    let d = inspect(r.path());
+    let d = inspect(r.path(), 30);
     let names: Vec<&str> = d.branches.iter().map(|b| b.name.as_str()).collect();
     assert!(names.contains(&"main"), "{names:?}");
     assert!(names.contains(&"feature"), "{names:?}");
@@ -32,7 +32,7 @@ fn branch_rows_carry_ahead_and_behind_against_their_upstream() {
     let _clone = r.advance_upstream(&up, "c");
     r.git(&["fetch", "-q", "origin"]);
 
-    let d = inspect(r.path());
+    let d = inspect(r.path(), 30);
     let main = d.branches.iter().find(|b| b.name == "main").unwrap();
     assert_eq!(main.upstream.as_deref(), Some("origin/main"));
     assert_eq!(main.ahead, 1);
@@ -48,7 +48,7 @@ fn lists_stashes_newest_first_with_their_messages() {
     r.write("a", "3");
     r.git(&["stash", "push", "-q", "-m", "second"]);
 
-    let d = inspect(r.path());
+    let d = inspect(r.path(), 30);
     assert_eq!(d.stashes.len(), 2);
     assert_eq!(d.stashes[0].index, 0);
     assert!(
@@ -64,7 +64,7 @@ fn lists_remotes_with_urls() {
     let r = TestRepo::new();
     r.commit("a", "1", "one");
     r.git(&["remote", "add", "origin", "https://example.com/x.git"]);
-    let d = inspect(r.path());
+    let d = inspect(r.path(), 30);
     assert_eq!(d.remotes.len(), 1);
     assert_eq!(d.remotes[0].name, "origin");
     assert!(d.remotes[0].url.contains("example.com"));
@@ -76,7 +76,7 @@ fn lists_recent_commits_newest_first_capped_at_ten() {
     for n in 0..15 {
         r.commit("a", &format!("{n}"), &format!("commit {n}"));
     }
-    let d = inspect(r.path());
+    let d = inspect(r.path(), 30);
     assert_eq!(d.recent.len(), 10);
     assert!(
         d.recent[0].summary.contains("commit 14"),
@@ -95,7 +95,7 @@ fn lists_changed_files_with_their_facet() {
     r.commit("tracked", "1", "one");
     r.write("tracked", "2");
     r.write("loose", "x");
-    let d = inspect(r.path());
+    let d = inspect(r.path(), 30);
     let names: Vec<&str> = d.changed_files.iter().map(|(_, n)| n.as_str()).collect();
     assert!(names.contains(&"tracked"), "{names:?}");
     assert!(names.contains(&"loose"), "{names:?}");
@@ -120,7 +120,7 @@ fn lists_changed_files_with_their_facet() {
 #[test]
 fn a_broken_repository_yields_empty_detail_rather_than_panicking() {
     let d = tempfile::tempdir().unwrap();
-    let out = inspect(d.path());
+    let out = inspect(d.path(), 30);
     assert!(out.branches.is_empty());
     assert!(out.recent.is_empty());
 }
@@ -128,7 +128,7 @@ fn a_broken_repository_yields_empty_detail_rather_than_panicking() {
 #[test]
 fn an_unborn_repository_yields_no_commits_and_does_not_panic() {
     let r = TestRepo::new();
-    let d = inspect(r.path());
+    let d = inspect(r.path(), 30);
     assert!(d.recent.is_empty());
 }
 
@@ -140,7 +140,7 @@ fn a_repo_that_is_behind_reports_what_is_coming() {
     let _clone = r.advance_upstream(&up, "incoming.txt");
     r.git(&["fetch", "-q", "origin"]);
 
-    let d = inspect(r.path());
+    let d = inspect(r.path(), 30);
     let inc = d.incoming.expect("behind, so there is something incoming");
     assert_eq!(inc.files.len(), 1);
     assert_eq!(inc.files[0].path, "incoming.txt");
@@ -153,5 +153,29 @@ fn an_up_to_date_repo_has_nothing_incoming() {
     let r = TestRepo::new();
     r.commit("a", "1", "one");
     r.with_upstream();
-    assert!(inspect(r.path()).incoming.is_none());
+    assert!(inspect(r.path(), 30).incoming.is_none());
+}
+
+#[test]
+fn changed_files_are_sorted_by_path() {
+    let r = TestRepo::new();
+    r.commit("seed", "0", "seed");
+    for name in ["zeta", "alpha", "mid/b", "mid/a", "beta"] {
+        r.write(name, "x");
+    }
+    let d = inspect(r.path(), 30);
+    let paths: Vec<&str> = d.changed_files.iter().map(|(_, p)| p.as_str()).collect();
+    assert_eq!(paths, ["alpha", "beta", "mid/a", "mid/b", "zeta"]);
+}
+
+#[test]
+fn changed_files_sort_ignoring_case() {
+    let r = TestRepo::new();
+    r.commit("seed", "0", "seed");
+    for name in ["Zeta", "alpha", "Beta", "gamma"] {
+        r.write(name, "x");
+    }
+    let d = inspect(r.path(), 30);
+    let paths: Vec<&str> = d.changed_files.iter().map(|(_, p)| p.as_str()).collect();
+    assert_eq!(paths, ["alpha", "Beta", "gamma", "Zeta"]);
 }

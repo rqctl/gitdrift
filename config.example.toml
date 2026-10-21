@@ -27,3 +27,8 @@
 # unusual checkout stands out.
 # Default: ["main", "master", "trunk", "develop"]
 # Example: default_branches = ["main", "trunk"]
+
+# Most incoming commits listed in the detail pane; the newest are kept and the
+# pane says how many more there are.
+# Default: 30
+# Example: incoming_commits = 100

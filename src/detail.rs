@@ -36,6 +36,10 @@ pub struct Incoming {
     pub total_added: u32,
     pub total_removed: u32,
     pub range: String,
+    /// The newest incoming commits, at most the configured limit.
+    pub commits: Vec<CommitInfo>,
+    /// How many commits a pull would bring in, listed or not.
+    pub total_commits: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -69,7 +73,7 @@ pub struct CommitInfo {
 
 /// Everything shown in the detail pane. Best-effort: a failure in one section
 /// leaves that section empty rather than losing the whole pane.
-pub fn inspect(path: &Path) -> RepoDetail {
+pub fn inspect(path: &Path, incoming_limit: usize) -> RepoDetail {
     let mut out = RepoDetail::default();
     let Ok(repo) = gix::open(path) else {
         return out;
@@ -92,7 +96,7 @@ pub fn inspect(path: &Path) -> RepoDetail {
         .find(|b| b.is_head)
         .map_or(0, |b| b.behind);
     if behind > 0 {
-        out.incoming = incoming(path);
+        out.incoming = incoming(path, incoming_limit);
     }
     out
 }
@@ -215,9 +219,6 @@ fn changed_files(repo: &gix::Repository) -> Vec<(Facet, String)> {
 
     let mut out = Vec::new();
     for item in iter.flatten() {
-        if out.len() >= CHANGED_LIMIT {
-            break;
-        }
         match item {
             Item::TreeIndex(change) => out.push((Facet::Staged, change.location().to_string())),
             Item::IndexWorktree(iw) => match iw {
@@ -241,6 +242,11 @@ fn changed_files(repo: &gix::Repository) -> Vec<(Facet, String)> {
             },
         }
     }
+    // The status walk is parallel, so its order varies between runs; sort
+    // before cutting to the limit so the same files are listed every time.
+    // Case-insensitive, with the exact path as tiebreak to stay deterministic.
+    out.sort_by_cached_key(|(_, path)| (path.to_lowercase(), path.clone()));
+    out.truncate(CHANGED_LIMIT);
     out
 }
 
@@ -275,7 +281,7 @@ fn git_stdout(path: &Path, args: &[&str]) -> Option<String> {
 
 /// Three dots deliberately: against a diverged branch `HEAD..@{u}` describes
 /// the wrong thing, while `HEAD...@{u}` is what a pull would actually bring.
-fn incoming(path: &Path) -> Option<Incoming> {
+fn incoming(path: &Path, limit: usize) -> Option<Incoming> {
     let mut files = parse_numstat(&git_stdout(path, &["diff", "--numstat", "HEAD...@{u}"])?);
     let truncated = files.len() > CHANGED_LIMIT;
     let total_added = files.iter().map(|f| f.added).sum();
@@ -288,13 +294,44 @@ fn incoming(path: &Path) -> Option<Incoming> {
     let upstream = git_stdout(path, &["rev-parse", "--short", "@{u}"])?;
     let range = format!("{}..{}", head.trim(), upstream.trim());
 
+    let log = git_stdout(
+        path,
+        &[
+            "log",
+            "--format=%h%x09%an%x09%ct%x09%s",
+            "-n",
+            &limit.to_string(),
+            "HEAD..@{u}",
+        ],
+    )?;
+    let commits = parse_log(&log);
+    let total_commits = git_stdout(path, &["rev-list", "--count", "HEAD..@{u}"])
+        .and_then(|n| n.trim().parse().ok())
+        .unwrap_or(commits.len());
+
     Some(Incoming {
         files,
         truncated,
         total_added,
         total_removed,
         range,
+        commits,
+        total_commits,
     })
+}
+
+fn parse_log(out: &str) -> Vec<CommitInfo> {
+    out.lines()
+        .filter_map(|line| {
+            let mut parts = line.splitn(4, '\t');
+            Some(CommitInfo {
+                short_id: parts.next()?.to_string(),
+                author: parts.next()?.to_string(),
+                time: parts.next()?.parse().ok(),
+                summary: parts.next()?.to_string(),
+            })
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -338,6 +375,21 @@ mod tests {
     fn a_rename_keeps_its_whole_path_text() {
         let out = "1\t1\tsrc/{old.rs => new.rs}\n";
         assert_eq!(parse_numstat(out)[0].path, "src/{old.rs => new.rs}");
+    }
+
+    #[test]
+    fn log_lines_become_commits() {
+        let c = parse_log("abc1234\tAda\t1700000000\tfix: a\tb\n");
+        assert_eq!(c.len(), 1);
+        assert_eq!(c[0].time, Some(1_700_000_000));
+        assert_eq!(
+            (
+                c[0].short_id.as_str(),
+                c[0].author.as_str(),
+                c[0].summary.as_str()
+            ),
+            ("abc1234", "Ada", "fix: a\tb")
+        );
     }
 
     #[test]

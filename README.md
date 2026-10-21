@@ -47,7 +47,7 @@ with its repository count, plus "all". Pick one with `↑`/`↓` and `Enter`; it
 beats scrolling a few hundred rows. `Shift+s` opens the same kind of picker
 for sort order: Drift (the default), Name, Last commit, Last fetch and
 branch count ("# Branches"). The list pane's own title bar shows both. After
-the scan the list keeps its order while you act on repositories; a `↻ o` mark
+the scan the list keeps its order while you act on repositories; a `↻ press o to re-sort` mark
 in the title says it has drifted out of order, and `o` re-sorts on demand.
 
 Fetching, pulling and pruning update rows in place and never rescan. `r`
@@ -68,10 +68,13 @@ delete right after without reopening it; `x` deletes it (asks first).
 The header at the top of the screen carries a colour-coded tally of what's
 drifted across the visible repositories (e.g. `↑3 ⊘2`, or `✔ all clean`),
 whatever's currently happening — a running job's spinner and progress, a
-toast, or the filter you're typing — and the keybinding hints.
+toast, or the filter you're typing — and one row of the most useful keybindings (`?` lists them all). Marked
+repositories are counted there too.
 
-`Esc` closes the filter or an open pane first, and quits only when there is
-nothing left to close. The help and problems panes scroll with `↑`/`↓`,
+An applied filter and drifted-only (`d`) are named in the list's title.
+`Esc` clears an applied filter, closes an open pane or the zoom first, and quits only when there is
+nothing left to close. While a fetch, pull or prune is running, the first quit
+press only warns; press again to quit anyway (`Ctrl+C` always quits at once). The help and problems panes scroll with `↑`/`↓`,
 `PgUp`/`PgDn` or the wheel when they outgrow the terminal.
 
 ## Detail pane
@@ -82,10 +85,21 @@ the terminal's current width: if it does, the detail pane sits beside the
 list; if showing it there would require shortening the name, it instead
 takes over the full screen, and the list is one more `Tab` away.
 
+For a repository that is behind, the pane's "Incoming" section shows the
+`Shift+d`/`Shift+l` reminder, then a diff summary and the incoming commits. Only
+the newest `incoming_commits` (default 30) are listed; when there are more, a
+`⚠` line says how many, and raising the setting in the config shows more.
+
+`z` zooms the detail pane to the full screen whatever the width; `↑`/`↓` still
+change repository, and `z` or `Esc` returns to the list. `PgUp`/`PgDn` scroll the
+detail pane a page while it is on screen, and move the list a page otherwise;
+`Shift+j`/`Shift+k` scroll it a line.
+
 ## Destroying work
 
-`Shift+x` throws work away, so it needs the shift key and shows you what you
-are about to lose before anything happens:
+`Shift+x` throws work away, so it needs the shift key and asks before anything
+happens. The confirm pane names the repositories; which branches go is only
+known once the fetch has run, so it cannot list them:
 
 - `Shift+x` runs `git fetch --prune --prune-tags --force`, then `git branch -D`
   on every local branch whose upstream is gone, across as many repositories at
@@ -118,6 +132,8 @@ regardless.
 A branch that is not one of `main`, `master`, `trunk` or `develop` is shown in
 bold rather than dimmed, so an unusual checkout is visible at a glance. The list
 is configurable.
+
+A marked row shows a pink `◆` in front of its name.
 
 The selected row gets a `█` in the gutter and a dark band across the pane —
 never an inverted row, which would turn every status colour into a background.

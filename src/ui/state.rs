@@ -45,6 +45,8 @@ pub enum Command {
     DropStash(PathBuf, usize),
 }
 
+const QUIT_WARNING: &str = "a job is still running — press Esc or q again to quit";
+
 /// A destructive action waiting for the user to confirm it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Pending {
@@ -161,6 +163,8 @@ pub struct App {
     pane_scroll: u16,
     /// Flips the default visibility `view.rs` picks each frame.
     detail_toggled: bool,
+    /// The detail pane fills the screen; the cursor keys still move the list.
+    zoomed: bool,
     /// The row Space last toggled, one end of a Ctrl+Space range. Held by
     /// path so a re-sort or a filter cannot shift it.
     anchor: Option<PathBuf>,
@@ -204,6 +208,7 @@ impl App {
             picker_repo: None,
             pane_scroll: 0,
             detail_toggled: false,
+            zoomed: false,
             anchor: None,
             scan_live_sort: true,
             scan_seen: BTreeSet::new(),
@@ -605,6 +610,10 @@ impl App {
         self.pane_scroll
     }
 
+    pub fn zoomed(&self) -> bool {
+        self.zoomed
+    }
+
     pub fn detail_toggled(&self) -> bool {
         self.detail_toggled
     }
@@ -672,6 +681,15 @@ impl App {
 
     pub fn is_marked(&self, path: &std::path::Path) -> bool {
         self.marked.contains(path)
+    }
+
+    /// The applied filter text, which outlives the typing that set it.
+    pub fn filter(&self) -> &str {
+        &self.filter
+    }
+
+    pub fn drifted_only(&self) -> bool {
+        self.drifted_only
     }
 
     pub fn marked_count(&self) -> usize {
@@ -794,6 +812,12 @@ impl App {
         Command::None
     }
 
+    /// Quitting mid-job would kill git part-way; the first press only warns,
+    /// and a second while the warning shows goes through.
+    fn quit_needs_confirming(&self) -> bool {
+        !self.jobs.is_empty() && self.toast() != Some(QUIT_WARNING)
+    }
+
     // --- toasts ----------------------------------------------------------
 
     pub fn set_toast(&mut self, text: impl Into<String>, ttl: Duration) {
@@ -840,11 +864,34 @@ impl App {
         }
 
         match key.code {
+            KeyCode::Char('q') | KeyCode::Esc if self.zoomed => {
+                self.zoomed = false;
+                Command::None
+            }
+            KeyCode::Esc if !self.filter.is_empty() => {
+                self.filter.clear();
+                self.clamp_selection();
+                self.detail_command()
+            }
+            KeyCode::Char('q') | KeyCode::Esc if self.quit_needs_confirming() => {
+                self.set_toast(QUIT_WARNING, Duration::from_secs(4));
+                Command::None
+            }
             KeyCode::Char('q') | KeyCode::Esc => Command::Quit,
+            KeyCode::Char('z') => {
+                self.zoomed = !self.zoomed;
+                Command::None
+            }
             KeyCode::Down => self.move_by(1),
             KeyCode::Up => self.move_by(-1),
-            KeyCode::PageDown => self.move_by(10),
-            KeyCode::PageUp => self.move_by(-10),
+            KeyCode::PageDown => {
+                self.scroll_pane(10);
+                Command::None
+            }
+            KeyCode::PageUp => {
+                self.scroll_pane(-10);
+                Command::None
+            }
             KeyCode::Char('g') => {
                 self.selected = 0;
                 self.detail_command()
@@ -1197,6 +1244,57 @@ mod tests {
         app.on_key(code(KeyCode::Up));
         app.on_key(code(KeyCode::Up)); // past the start
         assert_eq!(app.selected_index(), 0);
+    }
+
+    #[test]
+    fn page_keys_scroll_the_detail_and_never_move_the_cursor() {
+        let mut app = app_with((0..30).map(|i| row(&format!("r{i:02}"), 1)).collect());
+        app.on_key(code(KeyCode::PageDown));
+        assert_eq!(app.selected_index(), 0);
+        assert_eq!(app.pane_scroll(), 10);
+        app.on_key(code(KeyCode::PageUp));
+        assert_eq!(app.pane_scroll(), 0);
+    }
+
+    #[test]
+    fn z_zooms_the_detail_and_esc_unzooms_before_quitting() {
+        let mut app = app_with(vec![row("a", 1)]);
+        app.on_key(code(KeyCode::Char('z')));
+        assert!(app.zoomed());
+        assert_eq!(app.on_key(code(KeyCode::Esc)), Command::None);
+        assert!(!app.zoomed());
+        assert_eq!(app.on_key(code(KeyCode::Esc)), Command::Quit);
+    }
+
+    #[test]
+    fn esc_clears_an_applied_filter_before_quitting() {
+        let mut app = app_with(vec![row("alpha", 1), row("beta", 1)]);
+        for c in ['/', 'a', 'l'] {
+            app.on_key(code(KeyCode::Char(c)));
+        }
+        app.on_key(code(KeyCode::Enter));
+        assert_eq!(app.filter(), "al");
+        assert!(matches!(
+            app.on_key(code(KeyCode::Esc)),
+            Command::LoadDetail(_)
+        ));
+        assert_eq!(app.filter(), "");
+        assert_eq!(app.visible().len(), 2);
+        assert_eq!(app.on_key(code(KeyCode::Esc)), Command::Quit);
+    }
+
+    #[test]
+    fn quitting_during_a_job_warns_first_and_a_second_press_quits() {
+        let mut app = app_with(vec![row("a", 1)]);
+        app.begin_job("pulling", 2);
+        assert_eq!(app.on_key(code(KeyCode::Esc)), Command::None);
+        assert!(app.toast().unwrap().contains("still running"));
+        assert_eq!(app.on_key(code(KeyCode::Char('q'))), Command::Quit);
+
+        let mut app = app_with(vec![row("a", 1)]);
+        app.begin_job("pulling", 2);
+        let ctrl_c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+        assert_eq!(app.on_key(ctrl_c), Command::Quit);
     }
 
     #[test]

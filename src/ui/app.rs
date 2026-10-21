@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crossterm::event::{
-    self, DisableMouseCapture, EnableMouseCapture, Event, KeyEventKind, MouseEventKind,
+    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, MouseEventKind,
 };
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
@@ -22,7 +22,7 @@ use crate::detail::{self, RepoDetail};
 use crate::drift::is_drifted;
 use crate::scan::{self, Event as ScanEvent, ScanOptions};
 use crate::status::{self, RepoStatus};
-use crate::ui::state::{App, BranchChoice, Command, StashChoice};
+use crate::ui::state::{App, BranchChoice, Command, Pane, StashChoice};
 use crate::ui::view;
 
 const TOAST_TTL: Duration = Duration::from_secs(6);
@@ -106,6 +106,7 @@ pub fn run(opts: ScanOptions, cfg: &Config, drifted_only: bool) -> anyhow::Resul
         detail_area: None,
         generation: 0,
         list_state: ListState::default(),
+        incoming_commits: cfg.incoming_commits,
     };
 
     let result = event_loop(&mut term, &mut app, cfg, &opts, &tx, &rx, &mut loop_state);
@@ -126,6 +127,7 @@ struct LoopState {
     detail_area: Option<ratatui::layout::Rect>,
     generation: u64,
     list_state: ListState,
+    incoming_commits: usize,
 }
 
 fn event_loop(
@@ -199,6 +201,21 @@ fn event_loop(
             continue;
         }
         let command = match event::read()? {
+            // With no detail pane on screen, paging has only the list to move.
+            Event::Key(key)
+                if key.kind == KeyEventKind::Press
+                    && key.modifiers.is_empty()
+                    && matches!(key.code, KeyCode::PageUp | KeyCode::PageDown)
+                    && ls.detail_area.is_none()
+                    && app.pane() == Pane::List
+                    && app.filter_text().is_none() =>
+            {
+                app.scroll_list_by(if key.code == KeyCode::PageDown {
+                    10
+                } else {
+                    -10
+                })
+            }
             Event::Key(key) if key.kind == KeyEventKind::Press => app.on_key(key),
             Event::Mouse(m) => {
                 let delta = match m.kind {
@@ -453,7 +470,7 @@ fn over(a: ratatui::layout::Rect, col: u16, row: u16) -> bool {
 /// Request detail for `path`, tracking it as in flight.
 fn request_detail(ls: &mut LoopState, tx: &mpsc::Sender<Msg>, path: PathBuf) {
     ls.detail_pending = Some(path.clone());
-    spawn_detail(path, ls.generation, tx.clone());
+    spawn_detail(path, ls.generation, ls.incoming_commits, tx.clone());
 }
 
 /// Request detail for whatever is currently selected, unless it's already
@@ -613,9 +630,9 @@ fn spawn_pull(path: PathBuf, sel: RepoStatus, tx: mpsc::Sender<Msg>) {
     });
 }
 
-fn spawn_detail(path: PathBuf, generation: u64, tx: mpsc::Sender<Msg>) {
+fn spawn_detail(path: PathBuf, generation: u64, incoming_limit: usize, tx: mpsc::Sender<Msg>) {
     std::thread::spawn(move || {
-        let d = detail::inspect(&path);
+        let d = detail::inspect(&path, incoming_limit);
         let _ = tx.send(Msg::Detail(path, generation, Box::new(d)));
     });
 }

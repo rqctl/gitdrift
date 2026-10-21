@@ -21,6 +21,8 @@ pub struct Config {
     pub concurrency: usize,
     /// Branch names that are unremarkable. Anything else is highlighted.
     pub default_branches: Vec<String>,
+    /// Most incoming commits listed in the detail pane.
+    pub incoming_commits: usize,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -30,6 +32,7 @@ struct RawConfig {
     prune_extra: Option<Vec<String>>,
     concurrency: Option<usize>,
     default_branches: Option<Vec<String>>,
+    incoming_commits: Option<usize>,
 }
 
 fn expand(raw: &str) -> PathBuf {
@@ -46,6 +49,7 @@ impl Default for Config {
                 .iter()
                 .map(|s| (*s).to_string())
                 .collect(),
+            incoming_commits: 30,
         }
     }
 }
@@ -106,6 +110,9 @@ impl Config {
         if let Some(b) = raw.default_branches {
             cfg.default_branches = b;
         }
+        if let Some(n) = raw.incoming_commits {
+            cfg.incoming_commits = n.max(1);
+        }
         Ok(cfg)
     }
 }
@@ -126,6 +133,7 @@ mod tests {
         assert!(c.roots[0].ends_with("gitlab"), "roots = {:?}", c.roots);
         assert!(c.prune.iter().any(|p| p == ".terragrunt-cache"));
         assert_eq!(c.concurrency, 16);
+        assert_eq!(c.incoming_commits, 30);
     }
 
     #[test]

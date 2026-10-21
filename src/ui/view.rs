@@ -8,8 +8,9 @@ use ratatui::widgets::{
     Block, Borders, Clear, List, ListItem, ListState, Padding, Paragraph, Wrap,
 };
 use ratatui::Frame;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-use crate::detail::{FileDelta, RepoDetail};
+use crate::detail::{CommitInfo, FileDelta, RepoDetail};
 use crate::drift;
 use crate::render::{
     branches_label, elide, head_label, shorten_path, status_cells, Cols, BRANCHES_HEADER,
@@ -19,20 +20,8 @@ use crate::status::RepoStatus;
 use crate::theme::{self, Facet};
 use crate::ui::state::{App, Job, Pane};
 
-/// 4 content rows (drift tally, activity, navigation hints, other hints) plus
-/// the block's own border.
-const HEADER_HEIGHT: u16 = 6;
-
-/// Below this terminal height the two hint rows share one, to leave the list room.
-const COMPACT_BELOW: u16 = 20;
-
-fn header_height(frame_height: u16) -> u16 {
-    if frame_height < COMPACT_BELOW {
-        HEADER_HEIGHT - 1
-    } else {
-        HEADER_HEIGHT
-    }
-}
+/// 2 content rows (tally with activity, hints) plus the block's own border.
+const HEADER_HEIGHT: u16 = 4;
 
 fn facet_style(f: Facet) -> Style {
     let mut s = Style::default().fg(f.color().to_ratatui());
@@ -160,7 +149,7 @@ fn row_line(
     let mut spans = vec![
         cursor(selected),
         Span::styled(
-            if marked { "● " } else { "  " },
+            if marked { "◆ " } else { "  " },
             Style::default().fg(theme::Color::Pink.to_ratatui()),
         ),
     ];
@@ -237,17 +226,14 @@ pub fn draw(
     let area = frame.area();
     let rows = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(header_height(area.height)),
-            Constraint::Min(1),
-        ])
+        .constraints([Constraint::Length(HEADER_HEIGHT), Constraint::Min(1)])
         .split(area);
 
     draw_header(frame, app, rows[0]);
 
     let wide_fits = side_pane_fits(app, area.width);
-    let detail_open = app.pane() == Pane::List && app.detail_open(wide_fits);
-    let show_detail_side = detail_open && wide_fits;
+    let detail_open = app.pane() == Pane::List && (app.zoomed() || app.detail_open(wide_fits));
+    let show_detail_side = detail_open && wide_fits && !app.zoomed();
     let show_detail_full = detail_open && !show_detail_side;
     let body = if show_detail_side {
         Layout::default()
@@ -308,14 +294,25 @@ pub fn draw(
 fn draw_list(frame: &mut Frame, app: &App, area: Rect, state: &mut ListState) {
     let visible = app.visible();
     let count = if app.is_scanning() {
-        format!("Scanning… {} repositories", visible.len())
+        format!("Scanning… {}", visible.len())
     } else {
         format!("{} repositories", visible.len())
     };
     let scope = app.group().unwrap_or("all");
-    let stale = if app.order_stale() { " ↻ o" } else { "" };
+    let stale = if app.order_stale() {
+        " ↻ press o to re-sort"
+    } else {
+        ""
+    };
+    let mut flags = String::new();
+    if !app.filter().is_empty() {
+        flags.push_str(&format!(" · /{}", clip(app.filter(), 20)));
+    }
+    if app.drifted_only() {
+        flags.push_str(" · drifted only");
+    }
     let title = format!(
-        " {count} · {scope} · by {}{stale} ",
+        " {count} · {scope} · by {}{flags}{stale} ",
         app.sort_mode().label()
     );
     let block = Block::default()
@@ -425,6 +422,109 @@ fn scrollable(
     max
 }
 
+/// Keys in bold accent, their labels dim, so the action reads as a key to press
+/// and not as more detail text.
+fn shortcuts(items: &[(&str, &str)]) -> Line<'static> {
+    let mut spans = vec![Span::raw("  ")];
+    for (i, (key, label)) in items.iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::styled("  │  ", dim()));
+        }
+        spans.push(Span::styled(
+            (*key).to_string(),
+            accent().add_modifier(Modifier::BOLD),
+        ));
+        spans.push(Span::styled(format!(" {label}"), dim()));
+    }
+    Line::from(spans)
+}
+
+fn subsection(title: &str) -> Line<'static> {
+    Line::from(Span::styled(
+        format!("  {title}"),
+        dim().add_modifier(Modifier::BOLD),
+    ))
+}
+
+fn warn() -> Style {
+    Style::default()
+        .fg(theme::Color::Yellow.to_ratatui())
+        .add_modifier(Modifier::BOLD)
+}
+
+/// Seconds elapsed as at most four characters: `now`, `5m`, `2h`, `364d`, `2y`.
+/// There is no month unit: days run up to a year, then years (365 days each,
+/// rounded down).
+fn age_label(secs: i64) -> String {
+    const MIN: i64 = 60;
+    const HOUR: i64 = 60 * MIN;
+    const DAY: i64 = 24 * HOUR;
+    const YEAR: i64 = 365 * DAY;
+    match secs {
+        s if s < MIN => "now".to_string(),
+        s if s < HOUR => format!("{}m", s / MIN),
+        s if s < DAY => format!("{}h", s / HOUR),
+        s if s < YEAR => format!("{}d", s / DAY),
+        s => format!("{}y", (s / YEAR).min(99)),
+    }
+}
+
+/// `indent`, age, short id, summary and author on one row of `width` columns,
+/// the author flush right. The author goes first when the summary would be
+/// left too short.
+fn commit_line(c: &CommitInfo, indent: &str, width: usize) -> Line<'static> {
+    let age = c.time.map_or(String::new(), |t| {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs() as i64);
+        age_label((now - t).max(0))
+    });
+    let prefix = format!("{indent}{age:>4} {} ", c.short_id);
+    let author = format!("  {}", c.author);
+    let avail = width.saturating_sub(prefix.width());
+    let author_w = author.width();
+    let (summary_w, author) = if avail >= author_w + MIN_SUMMARY {
+        (avail - author_w, author)
+    } else {
+        (avail, String::new())
+    };
+    let summary = clip(&c.summary, summary_w);
+    let pad = if author.is_empty() {
+        0
+    } else {
+        summary_w.saturating_sub(summary.width())
+    };
+    Line::from(vec![
+        Span::styled(prefix, dim()),
+        Span::raw(summary),
+        Span::raw(" ".repeat(pad)),
+        Span::styled(author, dim()),
+    ])
+}
+
+/// Fewest summary columns worth keeping next to an author.
+const MIN_SUMMARY: usize = 20;
+
+/// Cut `s` to `width` terminal columns, keeping the head and marking the cut.
+/// Columns, not chars: an emoji takes two and would otherwise wrap the row.
+fn clip(s: &str, width: usize) -> String {
+    if s.width() <= width {
+        return s.to_string();
+    }
+    let mut out = String::new();
+    let mut used = 0;
+    for c in s.chars() {
+        let w = c.width().unwrap_or(0);
+        if used + w > width.saturating_sub(1) {
+            break;
+        }
+        out.push(c);
+        used += w;
+    }
+    out.push('…');
+    out
+}
+
 fn draw_detail(frame: &mut Frame, app: &App, detail: Option<&RepoDetail>, area: Rect) -> u16 {
     let block = || {
         Block::default()
@@ -444,8 +544,12 @@ fn draw_detail(frame: &mut Frame, app: &App, detail: Option<&RepoDetail>, area: 
         Line::from(Span::styled(sel.path.display().to_string(), dim())),
     ];
     if let Some(age) = sel.fetch_age {
+        let ago = match age_label(age.as_secs() as i64).as_str() {
+            "now" => "just now".to_string(),
+            label => format!("{label} ago"),
+        };
         lines.push(Line::from(Span::styled(
-            format!("last fetch: {}h ago", age.as_secs() / 3600),
+            format!("last fetch: {ago}"),
             dim(),
         )));
     }
@@ -468,6 +572,9 @@ fn draw_detail(frame: &mut Frame, app: &App, detail: Option<&RepoDetail>, area: 
         );
         return 0;
     };
+
+    // The pane's text width: its borders and horizontal padding.
+    let inner_w = usize::from(area.width).saturating_sub(4);
 
     lines.push(section("Branches"));
     for b in &d.branches {
@@ -496,64 +603,13 @@ fn draw_detail(frame: &mut Frame, app: &App, detail: Option<&RepoDetail>, area: 
         lines.push(Line::from(spans));
     }
 
-    if let Some(inc) = &d.incoming {
+    if !d.remotes.is_empty() {
         lines.push(Line::raw(""));
-        lines.push(Line::from(vec![
-            section_span("Incoming"),
-            Span::raw("  "),
-            Span::styled(inc.range.clone(), accent()),
-        ]));
-        let max = inc
-            .files
-            .iter()
-            .map(|f| f.added + f.removed)
-            .max()
-            .unwrap_or(0);
-        let count_w = max.to_string().len();
-        // Paths get whatever the pane leaves after the gutter, count and bar.
-        let bar_w = BAR_MAX.min(usize::from(area.width).saturating_sub(28));
-        let name_w = inc
-            .files
-            .iter()
-            .map(|f| f.path.chars().count())
-            .max()
-            .unwrap_or(0)
-            .min(usize::from(area.width).saturating_sub(count_w + bar_w + 8));
-        for f in &inc.files {
-            let mut spans = vec![
-                Span::raw("  "),
-                Span::raw(format!("{:name_w$} ", shorten_path(&f.path, name_w))),
-                Span::styled(format!("{:>count_w$} ", f.added + f.removed), dim()),
-            ];
-            spans.extend(stat_bar(f, max, bar_w));
-            lines.push(Line::from(spans));
-        }
-        if inc.truncated {
-            lines.push(Line::from(Span::styled("  …", dim())));
-        }
-        lines.push(Line::from(Span::styled(
-            format!(
-                "  {} file{}, {} insertions(+), {} deletions(-)",
-                inc.files.len(),
-                if inc.files.len() == 1 { "" } else { "s" },
-                inc.total_added,
-                inc.total_removed
-            ),
-            dim(),
-        )));
-        lines.push(Line::from(Span::styled(
-            "  Shift+d diff   Shift+l log",
-            accent(),
-        )));
-    }
-
-    if !d.stashes.is_empty() {
-        lines.push(Line::raw(""));
-        lines.push(section("Stashes"));
-        for s in &d.stashes {
+        lines.push(section("Remotes"));
+        for r in &d.remotes {
             lines.push(Line::from(Span::styled(
-                format!("  ⚑{} {}", s.index, s.message),
-                facet_style(Facet::Stashed),
+                format!("  {} {}", r.name, r.url),
+                dim(),
             )));
         }
     }
@@ -569,14 +625,76 @@ fn draw_detail(frame: &mut Frame, app: &App, detail: Option<&RepoDetail>, area: 
         }
     }
 
-    if !d.remotes.is_empty() {
+    if !d.stashes.is_empty() {
         lines.push(Line::raw(""));
-        lines.push(section("Remotes"));
-        for r in &d.remotes {
+        lines.push(section("Stashes"));
+        for s in &d.stashes {
             lines.push(Line::from(Span::styled(
-                format!("  {} {}", r.name, r.url),
-                dim(),
+                format!("  ⚑{} {}", s.index, s.message),
+                facet_style(Facet::Stashed),
             )));
+        }
+    }
+
+    if let Some(inc) = &d.incoming {
+        lines.push(Line::raw(""));
+        lines.push(Line::from(vec![
+            section_span("Incoming"),
+            Span::raw("  "),
+            Span::styled(inc.range.clone(), accent()),
+        ]));
+        lines.push(shortcuts(&[("Shift+d", "diff"), ("Shift+l", "log")]));
+
+        lines.push(subsection("Diff summary"));
+        let max = inc
+            .files
+            .iter()
+            .map(|f| f.added + f.removed)
+            .max()
+            .unwrap_or(0);
+        let count_w = max.to_string().len();
+        // Paths get whatever the row leaves after the indent, count and bar.
+        let bar_w = BAR_MAX.min(inner_w.saturating_sub(28));
+        let name_w = inc
+            .files
+            .iter()
+            .map(|f| f.path.chars().count())
+            .max()
+            .unwrap_or(0)
+            .min(inner_w.saturating_sub(count_w + bar_w + 6));
+        for f in &inc.files {
+            let mut spans = vec![
+                Span::raw("    "),
+                Span::raw(format!("{:name_w$} ", shorten_path(&f.path, name_w))),
+                Span::styled(format!("{:>count_w$} ", f.added + f.removed), dim()),
+            ];
+            spans.extend(stat_bar(f, max, bar_w));
+            lines.push(Line::from(spans));
+        }
+        if inc.truncated {
+            lines.push(Line::from(Span::styled("    …", dim())));
+        }
+        let totals = format!(
+            "    {} file{}, {} insertions(+), {} deletions(-)",
+            inc.files.len(),
+            if inc.files.len() == 1 { "" } else { "s" },
+            inc.total_added,
+            inc.total_removed
+        );
+        lines.push(Line::from(Span::styled(clip(&totals, inner_w), dim())));
+
+        lines.push(Line::raw(""));
+        lines.push(subsection("Commits"));
+        if inc.total_commits > inc.commits.len() {
+            let note = format!(
+                "    ⚠ newest {} of {} shown — raise incoming_commits in the config to see more",
+                inc.commits.len(),
+                inc.total_commits
+            );
+            lines.push(Line::from(Span::styled(clip(&note, inner_w), warn())));
+        }
+        for c in &inc.commits {
+            lines.push(commit_line(c, "    ", inner_w));
         }
     }
 
@@ -584,10 +702,7 @@ fn draw_detail(frame: &mut Frame, app: &App, detail: Option<&RepoDetail>, area: 
         lines.push(Line::raw(""));
         lines.push(section("Recent"));
         for c in &d.recent {
-            lines.push(Line::from(vec![
-                Span::styled(format!("  {} ", c.short_id), dim()),
-                Span::raw(c.summary.clone()),
-            ]));
+            lines.push(commit_line(c, "  ", inner_w));
         }
     }
 
@@ -658,7 +773,7 @@ fn draw_confirm(frame: &mut Frame, app: &App, area: Rect) {
     }
     lines.push(Line::raw(""));
     lines.push(Line::from(vec![
-        Span::styled("y", accent()),
+        Span::styled("y", accent().add_modifier(Modifier::BOLD)),
         Span::raw(" to proceed · any other key cancels"),
     ]));
     frame.render_widget(
@@ -898,7 +1013,7 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
     (
         "List view — navigate",
         &[
-            ("↑↓ PgUp PgDn", "Move"),
+            ("↑↓", "Move"),
             ("g / Shift+g", "First / last"),
             ("n", "Filter by namespace"),
             (
@@ -958,7 +1073,9 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
     (
         "Detail pane",
         &[
+            ("z", "Zoom the detail pane to full screen (Esc / z back)"),
             ("Shift+j / Shift+k", "Scroll the detail pane"),
+            ("PgUp/PgDn", "Scroll the detail pane a page"),
             (
                 "wheel",
                 "Scroll the detail under the pointer, else the list",
@@ -974,7 +1091,8 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
         &[
             ("!", "Problems"),
             ("?", "This help"),
-            ("Esc / q / Ctrl-C", "Quit"),
+            ("Esc", "Close the zoom, filter or pane first, then quit"),
+            ("q / Ctrl-C", "Quit"),
         ],
     ),
 ];
@@ -1025,22 +1143,20 @@ fn draw_help(frame: &mut Frame, app: &App, area: Rect) -> u16 {
     )
 }
 
-/// The list view's navigation bindings: the first hints row, dropped from the
-/// right when the terminal is too narrow to hold them all.
-const NAV_HINTS: &[(&str, &str)] = &[
-    ("↑↓ PgUp PgDn", "move"),
-    ("g / Shift+g", "first/last"),
+/// The one hints row, most important first; dropped from the right when the
+/// terminal is too narrow to hold them all.
+const HINTS: &[(&str, &str)] = &[
+    ("↑↓", "move"),
+    ("/", "filter"),
+    ("Space", "mark"),
+    ("f", "fetch"),
+    ("p", "pull"),
+    ("Tab", "detail"),
     ("n", "namespace"),
     ("Shift+s", "sort"),
-    ("o", "re-sort"),
-    ("d", "drifted only"),
-    ("/", "filter"),
 ];
 
-/// The second hints row; help and quit are pinned after it.
-const HINTS: &[(&str, &str)] = &[("Tab", "detail")];
-
-/// Pinned at the end of the second hints row; never dropped for width.
+/// Pinned at the end of the hints row; never dropped for width.
 const TAIL: &str = "? help | Esc quit";
 
 /// As many labelled hints as fit in `width`, leaving room for `tail`.
@@ -1133,7 +1249,8 @@ fn activity(jobs: &[Job], frame: char) -> Option<String> {
     Some(format!("{frame} {} {count}{extra}", first.label))
 }
 
-/// Drift tally, activity (job/toast/filter), and keybinding hints, top to bottom.
+/// Drift tally with the marks and activity (job/toast/filter) beside it, then
+/// the keybinding hints.
 fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
     let block = Block::default()
         .borders(Borders::ALL)
@@ -1164,17 +1281,21 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
     };
 
     let w = inner.width as usize;
-    let mut lines = vec![
-        Line::from(drift_tally(&app.visible())),
-        Line::from(activity_spans),
-    ];
-    if inner.height >= 4 {
-        lines.push(Line::from(Span::styled(fit_hints(NAV_HINTS, "", w), dim())));
-        lines.push(Line::from(Span::styled(fit_hints(HINTS, TAIL, w), dim())));
-    } else {
-        let all: Vec<(&str, &str)> = NAV_HINTS.iter().chain(HINTS).copied().collect();
-        lines.push(Line::from(Span::styled(fit_hints(&all, TAIL, w), dim())));
+    let mut tally = drift_tally(&app.visible());
+    if app.marked_count() > 0 {
+        tally.push(Span::styled(
+            format!(" · {} marked", app.marked_count()),
+            accent(),
+        ));
     }
+    if !activity_spans.is_empty() {
+        tally.push(Span::raw("  "));
+        tally.extend(activity_spans);
+    }
+    let lines = vec![
+        Line::from(tally),
+        Line::from(Span::styled(fit_hints(HINTS, TAIL, w), dim())),
+    ];
     frame.render_widget(Paragraph::new(lines), inner);
 }
 
@@ -1500,6 +1621,30 @@ mod tests {
     }
 
     #[test]
+    fn an_applied_filter_and_drifted_only_are_named_in_the_list_title() {
+        let mut app = app_with(vec![row("alpha", 1), row("beta", 1)]);
+        for c in ['/', 'a', 'l'] {
+            app.on_key(key(c));
+        }
+        app.on_key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Enter,
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        app.on_key(key('d'));
+        let out = render(120, 20, &app);
+        assert!(out.contains("· /al"), "{out}");
+        assert!(out.contains("drifted only"), "{out}");
+    }
+
+    #[test]
+    fn the_header_counts_marked_repositories() {
+        let mut app = app_with(vec![row("a", 1), row("b", 1)]);
+        app.on_key(key(' '));
+        let out = render(120, 20, &app);
+        assert!(out.contains("1 marked"), "{out}");
+    }
+
+    #[test]
     fn marked_rows_are_flagged_in_the_list() {
         let mut app = app_with(vec![row("sre/alpha", 1)]);
         let before = render(120, 20, &app);
@@ -1509,7 +1654,7 @@ mod tests {
         ));
         let after = render(120, 20, &app);
         assert_ne!(before, after, "a marked row must look different");
-        assert!(after.contains('●'), "{after}");
+        assert!(after.contains('◆'), "{after}");
     }
 
     fn detail_with_commits(n: usize) -> RepoDetail {
@@ -1552,7 +1697,7 @@ mod tests {
         let out = buffer_string(term.backend().buffer());
         assert!(out.contains('▾'), "{out}");
 
-        for _ in 0..40 {
+        for _ in 0..60 {
             app.on_key(crossterm::event::KeyEvent::from(
                 crossterm::event::KeyCode::Down,
             ));
@@ -1779,6 +1924,259 @@ mod tests {
     }
 
     #[test]
+    fn ages_are_short_and_pick_the_largest_unit() {
+        let cases = [
+            (0, "now"),
+            (59, "now"),
+            (60, "1m"),
+            (3_599, "59m"),
+            (3_600, "1h"),
+            (86_399, "23h"),
+            (86_400, "1d"),
+            (364 * 86_400, "364d"),
+            (365 * 86_400, "1y"),
+            (545 * 86_400, "1y"),
+            (4_000 * 86_400, "10y"),
+        ];
+        for (secs, want) in cases {
+            assert_eq!(age_label(secs), want, "{secs}s");
+        }
+    }
+
+    #[test]
+    fn clip_keeps_the_head_and_marks_the_cut() {
+        assert_eq!(clip("short", 10), "short");
+        assert_eq!(clip("abcdefghij", 5), "abcd…");
+        assert_eq!(clip("abc", 0), "…");
+        // A wide char never straddles the cut: 🟢 is two columns.
+        assert_eq!(clip("ab🟢cd", 4), "ab…");
+        assert_eq!(clip("ab🟢cd", 5), "ab🟢…");
+    }
+
+    #[test]
+    fn a_long_commit_summary_is_clipped_to_one_row() {
+        let app = app_with(vec![row("repo", 1)]);
+        let long = "chore: update thing to version ".to_string() + &"9f".repeat(60);
+        let commit = |id: &str| crate::detail::CommitInfo {
+            short_id: id.into(),
+            summary: long.clone(),
+            author: "Ada Lovelace".into(),
+            time: None,
+        };
+        let detail = RepoDetail {
+            recent: vec![commit("aaaaaaa")],
+            ..RepoDetail::default()
+        };
+        let mut term = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        let mut state = ListState::default();
+        term.draw(|f| {
+            draw(f, &app, Some(&detail), &mut state);
+        })
+        .unwrap();
+        let out = buffer_string(term.backend().buffer());
+        let rows: Vec<&str> = out.lines().filter(|l| l.contains("aaaaaaa")).collect();
+        assert_eq!(rows.len(), 1, "{out}");
+        assert!(rows[0].contains('…'), "{out}");
+        assert!(
+            !out.contains("9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn incoming_is_split_into_diff_summary_and_commits_and_warns_when_capped() {
+        let app = app_with(vec![row("repo", 1)]);
+        let commit = crate::detail::CommitInfo {
+            short_id: "def5678".into(),
+            summary: "add users endpoint".into(),
+            author: "Ada".into(),
+            time: None,
+        };
+        let detail = RepoDetail {
+            incoming: Some(Incoming {
+                commits: vec![commit; 3],
+                total_commits: 212,
+                range: "abc1234..def5678".into(),
+                ..Incoming::default()
+            }),
+            ..RepoDetail::default()
+        };
+        let mut term = Terminal::new(TestBackend::new(200, 40)).unwrap();
+        let mut state = ListState::default();
+        term.draw(|f| {
+            draw(f, &app, Some(&detail), &mut state);
+        })
+        .unwrap();
+        let out = buffer_string(term.backend().buffer());
+        let at = |needle: &str| {
+            out.find(needle)
+                .unwrap_or_else(|| panic!("{needle}\n{out}"))
+        };
+        assert!(at("Incoming") < at("Shift+d diff"));
+        assert!(at("Shift+d diff") < at("Diff summary"));
+        assert!(at("Diff summary") < at("Commits"));
+        assert!(at("Commits") < at("newest 3 of 212 shown"));
+        assert!(at("newest 3 of 212 shown") < at("def5678 add users"));
+    }
+
+    #[test]
+    fn detail_sections_run_branches_remotes_changes_incoming_recent() {
+        let app = app_with(vec![row("repo", 1)]);
+        let commit = crate::detail::CommitInfo {
+            short_id: "def5678".into(),
+            summary: "add users endpoint".into(),
+            author: "Ada".into(),
+            time: None,
+        };
+        let detail = RepoDetail {
+            remotes: vec![crate::detail::RemoteInfo {
+                name: "origin".into(),
+                url: "git@example.com:a/b.git".into(),
+            }],
+            changed_files: vec![(Facet::Unstaged, "src/lib.rs".into())],
+            incoming: Some(Incoming {
+                commits: vec![commit.clone()],
+                total_commits: 1,
+                ..Incoming::default()
+            }),
+            recent: vec![commit],
+            ..RepoDetail::default()
+        };
+        let mut term = Terminal::new(TestBackend::new(200, 60)).unwrap();
+        let mut state = ListState::default();
+        term.draw(|f| {
+            draw(f, &app, Some(&detail), &mut state);
+        })
+        .unwrap();
+        let out = buffer_string(term.backend().buffer());
+        let at = |needle: &str| {
+            out.find(needle)
+                .unwrap_or_else(|| panic!("{needle}\n{out}"))
+        };
+        assert!(at("Branches") < at("Remotes"));
+        assert!(at("Remotes") < at("Changes"));
+        assert!(at("Changes") < at("Incoming"));
+        assert!(at("Incoming") < at("Recent"));
+    }
+
+    #[test]
+    fn diff_summary_rows_never_wrap_at_any_pane_width() {
+        let app = app_with(vec![row("repo", 1)]);
+        let detail = RepoDetail {
+            incoming: Some(Incoming {
+                files: vec![
+                    FileDelta {
+                        added: 413,
+                        removed: 3,
+                        path:
+                            "plugins/datamorph-backend/src/actions/createDatamorphActions.test.ts"
+                                .into(),
+                    },
+                    FileDelta {
+                        added: 2,
+                        removed: 1,
+                        path: "a.txt".into(),
+                    },
+                ],
+                total_added: 415,
+                total_removed: 4,
+                ..Incoming::default()
+            }),
+            ..RepoDetail::default()
+        };
+        for width in 50..=160 {
+            let mut term = Terminal::new(TestBackend::new(width, 40)).unwrap();
+            let mut state = ListState::default();
+            term.draw(|f| {
+                draw(f, &app, Some(&detail), &mut state);
+            })
+            .unwrap();
+            let out = buffer_string(term.backend().buffer());
+            let rows = out.lines().filter(|l| l.contains("a.txt")).count();
+            assert_eq!(rows, 1, "{width}\n{out}");
+            // The big file's row must hold its count and bar on one row.
+            let big = out
+                .lines()
+                .find(|l| l.contains("413") || l.contains("createDatamorph") || l.contains('…'))
+                .unwrap_or_default();
+            assert!(big.contains("416"), "{width}: {big:?}\n{out}");
+        }
+    }
+
+    #[test]
+    fn commit_rows_with_wide_characters_do_not_wrap() {
+        let app = app_with(vec![row("repo", 1)]);
+        let commit = |id: &str| {
+            crate::detail::CommitInfo {
+            short_id: id.into(),
+            summary: "🟢🟢🟢🟢🟢🟢🟢🟢🟢🟢 chore(distribution): upgrade version main-v2.48.0 and more words done"
+                .into(),
+            author: "Abderrahim ALLOUM (EXT)".into(),
+            time: Some(0),
+        }
+        };
+        let detail = RepoDetail {
+            recent: vec![commit("aaaaaaa")],
+            ..RepoDetail::default()
+        };
+        for width in 60..=140 {
+            let mut term = Terminal::new(TestBackend::new(width, 30)).unwrap();
+            let mut state = ListState::default();
+            term.draw(|f| {
+                draw(f, &app, Some(&detail), &mut state);
+            })
+            .unwrap();
+            let out = buffer_string(term.backend().buffer());
+            assert!(
+                !out.contains("(EXT)") || out.contains("ALLOUM (EXT)"),
+                "{width}\n{out}"
+            );
+            let at = out.lines().position(|l| l.contains("aaaaaaa")).unwrap();
+            let next = out.lines().nth(at + 1).unwrap_or_default();
+            assert!(
+                !["chore", "…", "(EXT)", "done"]
+                    .iter()
+                    .any(|w| next.contains(w)),
+                "{width}: wrapped\n{out}"
+            );
+        }
+    }
+
+    #[test]
+    fn recent_commits_show_their_author() {
+        let app = app_with(vec![row("repo", 1)]);
+        let detail = RepoDetail {
+            recent: vec![crate::detail::CommitInfo {
+                short_id: "aaaaaaa".into(),
+                summary: "fix things".into(),
+                author: "Grace Hopper".into(),
+                time: Some(
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap()
+                        .as_secs() as i64
+                        - 2 * 3_600
+                        - 30,
+                ),
+            }],
+            ..RepoDetail::default()
+        };
+        let mut term = Terminal::new(TestBackend::new(120, 30)).unwrap();
+        let mut state = ListState::default();
+        term.draw(|f| {
+            draw(f, &app, Some(&detail), &mut state);
+        })
+        .unwrap();
+        let out = buffer_string(term.backend().buffer());
+        let row = out.lines().find(|l| l.contains("aaaaaaa")).unwrap();
+        assert!(
+            row.ends_with("Grace Hopper │"),
+            "author is flush right:\n{out}"
+        );
+        assert!(out.contains("   2h aaaaaaa fix things"), "{out}");
+    }
+
+    #[test]
     fn the_detail_pane_lists_what_is_incoming() {
         let app = app_with(vec![row("repo", 1)]);
         let detail = RepoDetail {
@@ -1792,6 +2190,13 @@ mod tests {
                 total_added: 42,
                 total_removed: 17,
                 range: "abc1234..def5678".into(),
+                commits: vec![crate::detail::CommitInfo {
+                    short_id: "def5678".into(),
+                    summary: "add users endpoint".into(),
+                    author: "Ada".into(),
+                    time: None,
+                }],
+                total_commits: 1,
             }),
             ..RepoDetail::default()
         };
@@ -1809,6 +2214,11 @@ mod tests {
             out.contains("1 file, 42 insertions(+), 17 deletions(-)"),
             "{out}"
         );
+        let row = out
+            .lines()
+            .find(|l| l.contains("add users endpoint"))
+            .unwrap();
+        assert!(row.ends_with("Ada │"), "author is flush right:\n{out}");
         assert!(out.contains("Shift+d diff"), "{out}");
     }
 
@@ -1816,16 +2226,16 @@ mod tests {
     fn the_header_lists_every_navigation_binding_when_it_fits() {
         let app = app_with(vec![row("a", 1)]);
         let out = render(120, 20, &app);
-        for hint in NAV_HINTS {
+        for hint in HINTS {
             let piece = format!("{} {}", hint.0, hint.1);
             assert!(out.contains(&piece), "missing {piece:?}\n{out}");
         }
     }
 
     #[test]
-    fn a_short_terminal_keeps_one_hints_row_with_help_and_quit() {
+    fn a_narrow_terminal_drops_hints_but_keeps_help_and_quit() {
         let app = app_with(vec![row("a", 1)]);
-        let out = render(120, 12, &app);
+        let out = render(40, 12, &app);
         assert!(out.contains("? help | Esc quit"), "{out}");
         assert!(out.contains("move"), "{out}");
     }
@@ -1848,9 +2258,8 @@ mod tests {
         let tail_keys = TAIL
             .split(" | ")
             .filter_map(|pair| pair.split_whitespace().next());
-        let hint_keys = NAV_HINTS
+        let hint_keys = HINTS
             .iter()
-            .chain(HINTS)
             .flat_map(|(key, _)| key.split_whitespace().filter(|k| *k != "/" || *key == "/"));
         for key in hint_keys.chain(tail_keys) {
             assert!(

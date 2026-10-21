@@ -813,6 +813,7 @@ dependencies = [
  "shellexpand",
  "tempfile",
  "toml",
+ "unicode-width",
 ]
 
 [[package]]
