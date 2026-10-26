@@ -118,13 +118,34 @@ pub struct StashChoice {
     pub message: String,
 }
 
-/// Background work in flight. `total == 0` means the size is not yet known.
+/// Work in flight. `total == 0` means the size is not yet known. A `modal`
+/// job freezes the UI behind a progress box; `sort_after` re-sorts once when
+/// it ends.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Job {
     pub id: u64,
     pub label: String,
     pub done: usize,
     pub total: usize,
+    pub failed: usize,
+    pub modal: bool,
+    pub sort_after: bool,
+    pub started: Instant,
+}
+
+impl Job {
+    pub fn new(id: u64, label: impl Into<String>, total: usize) -> Self {
+        Job {
+            id,
+            label: label.into(),
+            done: 0,
+            total,
+            failed: 0,
+            modal: false,
+            sort_after: false,
+            started: Instant::now(),
+        }
+    }
 }
 
 pub struct App {
@@ -284,7 +305,14 @@ impl App {
         if let Some(id) = self.scan_job.take() {
             self.end_job(id);
         }
-        self.scan_job = Some(self.begin_job("scanning", 0));
+        // A rescan the user asked for blocks like any other bulk job, sized by
+        // the list it is refreshing.
+        let total = if sort_after { self.rows.len() } else { 0 };
+        let id = self.begin_job("scanning", total);
+        if let Some(j) = self.jobs.iter_mut().find(|j| j.id == id) {
+            j.modal = sort_after;
+        }
+        self.scan_job = Some(id);
         self.scan_live_sort = self.rows.is_empty();
         self.scan_sort_after = sort_after;
         self.scan_seen.clear();
@@ -324,13 +352,29 @@ impl App {
     pub fn begin_job(&mut self, label: impl Into<String>, total: usize) -> u64 {
         self.next_job_id += 1;
         let id = self.next_job_id;
-        self.jobs.push(Job {
-            id,
-            label: label.into(),
-            done: 0,
-            total,
-        });
+        self.jobs.push(Job::new(id, label, total));
         id
+    }
+
+    /// A job over many repositories: blocks input and re-sorts when it ends.
+    pub fn begin_modal_job(&mut self, label: impl Into<String>, total: usize) -> u64 {
+        let id = self.begin_job(label, total);
+        if let Some(j) = self.jobs.iter_mut().find(|j| j.id == id) {
+            j.modal = true;
+            j.sort_after = true;
+        }
+        id
+    }
+
+    pub fn modal_job(&self) -> Option<&Job> {
+        self.jobs.iter().find(|j| j.modal)
+    }
+
+    pub fn fail_job(&mut self, id: u64) {
+        if let Some(j) = self.jobs.iter_mut().find(|j| j.id == id) {
+            j.done += 1;
+            j.failed += 1;
+        }
     }
 
     pub fn advance_job(&mut self, id: u64) {
@@ -340,7 +384,11 @@ impl App {
     }
 
     pub fn end_job(&mut self, id: u64) {
+        let sort = self.jobs.iter().any(|j| j.id == id && j.sort_after);
         self.jobs.retain(|j| j.id != id);
+        if sort {
+            self.sort_keeping_cursor();
+        }
     }
 
     pub fn jobs(&self) -> &[Job] {
@@ -854,6 +902,9 @@ impl App {
                     | KeyModifiers::META,
             )
         {
+            return Command::None;
+        }
+        if self.modal_job().is_some() {
             return Command::None;
         }
         if self.filtering {
@@ -1971,6 +2022,27 @@ mod tests {
         assert_eq!(app.jobs()[0].total, 3);
         app.end_job(id);
         assert!(app.jobs().is_empty());
+    }
+
+    #[test]
+    fn a_modal_job_swallows_keys_but_not_ctrl_c() {
+        let mut app = app_with(vec![row("a", 1)]);
+        app.begin_modal_job("fetching", 2);
+        assert_eq!(app.on_key(key('q')), Command::None);
+        assert_eq!(app.on_key(key('r')), Command::None);
+        let ctrl_c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+        assert_eq!(app.on_key(ctrl_c), Command::Quit);
+    }
+
+    #[test]
+    fn a_modal_job_re_sorts_once_when_it_ends() {
+        let mut app = app_with(vec![row("a", 0), row("b", 0)]);
+        let id = app.begin_modal_job("fetching", 2);
+        app.push_status(row("b", 5));
+        assert!(app.order_stale());
+        app.end_job(id);
+        assert!(!app.order_stale());
+        assert_eq!(app.visible()[0].display_name, "b");
     }
 
     #[test]

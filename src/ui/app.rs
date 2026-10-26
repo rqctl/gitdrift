@@ -38,6 +38,7 @@ enum Msg {
     /// A background action re-inspected a repo; carries the fresh status and a toast.
     Refresh(RepoStatus, String),
     JobStep(u64),
+    JobFail(u64),
     JobEnd(u64),
 }
 
@@ -169,6 +170,7 @@ fn event_loop(
                     sync_detail_after_status_change(app, ls, tx, path);
                 }
                 Msg::JobStep(id) => app.advance_job(id),
+                Msg::JobFail(id) => app.fail_job(id),
                 Msg::JobEnd(id) => {
                     app.end_job(id);
                     if app.order_stale() {
@@ -207,6 +209,7 @@ fn event_loop(
                     && key.modifiers.is_empty()
                     && matches!(key.code, KeyCode::PageUp | KeyCode::PageDown)
                     && ls.detail_area.is_none()
+                    && app.modal_job().is_none()
                     && app.pane() == Pane::List
                     && app.filter_text().is_none() =>
             {
@@ -217,6 +220,7 @@ fn event_loop(
                 })
             }
             Event::Key(key) if key.kind == KeyEventKind::Press => app.on_key(key),
+            Event::Mouse(_) if app.modal_job().is_some() => continue,
             Event::Mouse(m) => {
                 let delta = match m.kind {
                     MouseEventKind::ScrollDown => 1,
@@ -243,13 +247,13 @@ fn event_loop(
             Command::Rescan => do_rescan(app, ls, opts, tx, true),
             Command::Fetch(paths) => {
                 let targets = named(app, paths);
-                let job = app.begin_job("fetching", targets.len());
+                let job = begin_bulk(app, "fetching", targets.len());
                 spawn_fetch(targets, cfg.concurrency, job, tx.clone());
             }
             Command::FetchAll => {
                 let paths: Vec<PathBuf> = app.visible().iter().map(|r| r.path.clone()).collect();
                 let targets = named(app, paths);
-                let job = app.begin_job("fetching", targets.len());
+                let job = begin_bulk(app, "fetching", targets.len());
                 spawn_fetch(targets, cfg.concurrency, job, tx.clone());
             }
             Command::Pull(paths) => {
@@ -267,11 +271,8 @@ fn event_loop(
                 }
                 if !refused.is_empty() {
                     app.set_toast(refused.join("  ·  "), TOAST_TTL);
-                } else if !ready.is_empty() {
-                    app.set_toast(format!("pulling {} repositories…", ready.len()), TOAST_TTL);
-                }
-                for sel in ready {
-                    spawn_pull(sel.path.clone(), sel, tx.clone());
+                } else {
+                    start_pull(app, ready, cfg.concurrency, tx);
                 }
             }
             Command::PullAll => {
@@ -283,18 +284,17 @@ fn event_loop(
                         Err(_) => skipped += 1,
                     }
                 }
-                let mut msg = format!("pulling {} repositories…", ready.len());
                 if skipped > 0 {
-                    msg.push_str(&format!("  ·  {skipped} skipped (dirty or no upstream)"));
+                    app.set_toast(
+                        format!("{skipped} skipped (dirty or no upstream)"),
+                        TOAST_TTL,
+                    );
                 }
-                app.set_toast(msg, TOAST_TTL);
-                for sel in ready {
-                    spawn_pull(sel.path.clone(), sel, tx.clone());
-                }
+                start_pull(app, ready, cfg.concurrency, tx);
             }
             Command::Prune(paths) => {
                 let targets = named(app, paths);
-                let job = app.begin_job("pruning", targets.len());
+                let job = begin_bulk(app, "pruning", targets.len());
                 spawn_concurrent_worktree_op(
                     targets,
                     actions::prune_gone_branches,
@@ -513,12 +513,13 @@ fn status_for(app: &App, path: &Path) -> Option<RepoStatus> {
 /// the list reflects the result.
 fn spawn_concurrent_worktree_op(
     targets: Vec<(PathBuf, String)>,
-    op: fn(&Path) -> Result<String, actions::ActionError>,
+    op: impl Fn(&Path) -> Result<String, actions::ActionError> + Send + Sync + 'static,
     concurrency: usize,
     past_tense: &'static str,
     job: u64,
     tx: mpsc::Sender<Msg>,
 ) {
+    let op = Arc::new(op);
     std::thread::spawn(move || {
         let total = targets.len();
         let (work_tx, work_rx) = crossbeam_channel::unbounded::<(PathBuf, String)>();
@@ -533,6 +534,7 @@ fn spawn_concurrent_worktree_op(
                 let rx = work_rx.clone();
                 let tx = tx.clone();
                 let failures = Arc::clone(&failures);
+                let op = Arc::clone(&op);
                 std::thread::spawn(move || {
                     for (path, name) in rx {
                         match op(&path) {
@@ -544,6 +546,8 @@ fn spawn_concurrent_worktree_op(
                             }
                             Err(_) => {
                                 failures.fetch_add(1, Ordering::Relaxed);
+                                let _ = tx.send(Msg::JobFail(job));
+                                continue;
                             }
                         }
                         let _ = tx.send(Msg::JobStep(job));
@@ -615,6 +619,37 @@ fn spawn_scan(opts: ScanOptions, generation: u64, tx: mpsc::Sender<Msg>) {
             }
         }
     });
+}
+
+/// A lone repository pulls with a toast; several block behind a progress box.
+fn start_pull(app: &mut App, ready: Vec<RepoStatus>, concurrency: usize, tx: &mpsc::Sender<Msg>) {
+    match ready.len() {
+        0 => {}
+        1 => {
+            let sel = ready.into_iter().next().expect("one element");
+            spawn_pull(sel.path.clone(), sel, tx.clone());
+        }
+        n => {
+            let job = app.begin_modal_job("pulling", n);
+            let targets = named(app, ready.iter().map(|r| r.path.clone()).collect());
+            let by_path: std::collections::HashMap<PathBuf, RepoStatus> =
+                ready.into_iter().map(|r| (r.path.clone(), r)).collect();
+            let pull = move |path: &Path| match by_path.get(path) {
+                Some(sel) => actions::pull(path, sel),
+                None => Ok(String::new()),
+            };
+            spawn_concurrent_worktree_op(targets, pull, concurrency, "pulled", job, tx.clone());
+        }
+    }
+}
+
+/// More than one repository blocks the UI; one keeps the quiet spinner.
+fn begin_bulk(app: &mut App, label: &str, n: usize) -> u64 {
+    if n > 1 {
+        app.begin_modal_job(label, n)
+    } else {
+        app.begin_job(label, n)
+    }
 }
 
 fn spawn_pull(path: PathBuf, sel: RepoStatus, tx: mpsc::Sender<Msg>) {

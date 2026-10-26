@@ -279,6 +279,16 @@ pub fn draw(
             }
         }
     }
+    if let Some(job) = app.modal_job() {
+        frame.buffer_mut().set_style(
+            area,
+            Style::default()
+                .fg(theme::Color::Dim.to_ratatui())
+                .add_modifier(Modifier::DIM)
+                .remove_modifier(Modifier::BOLD),
+        );
+        draw_progress(frame, job, area);
+    }
     Rendered {
         detail_area: if show_detail_side {
             Some(body[1])
@@ -782,6 +792,46 @@ fn draw_confirm(frame: &mut Frame, app: &App, area: Rect) {
             .wrap(Wrap { trim: false }),
         area,
     );
+}
+
+/// The box over the dimmed screen while a modal job runs.
+fn draw_progress(frame: &mut Frame, job: &Job, area: Rect) {
+    let popup = centered(area, 52, 7);
+    frame.render_widget(Clear, popup);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(theme::border_style())
+        .padding(Padding::horizontal(1))
+        .title(format!(" {} ", job.label))
+        .title_style(theme::title_style());
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+
+    let spinner = spinner_frame(since_start());
+    let secs = job.started.elapsed().as_secs();
+    let mut detail = format!("{secs}s");
+    if job.failed > 0 {
+        detail = format!("{} failed  ·  {detail}", job.failed);
+    }
+    let mut lines = vec![Line::raw(""), Line::raw("")];
+    let done = job.done.min(job.total.max(job.done));
+    if job.total == 0 {
+        lines[0] = Line::from(Span::styled(format!("{spinner} {done}"), accent()));
+    } else {
+        let count = format!("{done}/{}  {}%", job.total, done * 100 / job.total);
+        let bar_w = (inner.width as usize)
+            .saturating_sub(count.width() + 3)
+            .max(1);
+        let filled = (done * bar_w / job.total).min(bar_w);
+        lines[0] = Line::from(vec![
+            Span::styled(format!("{spinner} "), accent()),
+            Span::styled("█".repeat(filled), accent()),
+            Span::styled("░".repeat(bar_w - filled), dim()),
+            Span::raw(format!(" {count}")),
+        ]);
+    }
+    lines[1] = Line::from(Span::styled(detail, dim()));
+    frame.render_widget(Paragraph::new(lines), inner);
 }
 
 /// A box of `width` x `height`, centred in `area` and never larger than it.
@@ -1488,44 +1538,44 @@ mod tests {
         assert!(out.contains("fetching"), "the spinner stays too:\n{out}");
     }
 
+    fn job(label: &str, done: usize, total: usize) -> Job {
+        Job {
+            done,
+            ..Job::new(0, label, total)
+        }
+    }
+
+    #[test]
+    fn a_modal_job_dims_the_screen_and_shows_its_progress() {
+        let mut app = app_with(vec![row("alpha", 1)]);
+        app.finish_scan();
+        let id = app.begin_modal_job("fetching", 4);
+        app.advance_job(id);
+        app.fail_job(id);
+        let out = render(100, 20, &app);
+        assert!(out.contains("2/4  50%"), "{out}");
+        assert!(out.contains("1 failed"), "{out}");
+        assert!(
+            out.contains("alpha"),
+            "the list stays visible behind it:\n{out}"
+        );
+    }
+
     #[test]
     fn the_activity_line_shows_the_label_and_its_progress() {
-        let jobs = [Job {
-            id: 1,
-            label: "fetching".into(),
-            done: 37,
-            total: 511,
-        }];
+        let jobs = [job("fetching", 37, 511)];
         assert_eq!(activity(&jobs, '⠹').unwrap(), "⠹ fetching 37/511");
     }
 
     #[test]
     fn an_indeterminate_job_shows_only_what_it_has_done() {
-        let jobs = [Job {
-            id: 1,
-            label: "scanning".into(),
-            done: 214,
-            total: 0,
-        }];
+        let jobs = [job("scanning", 214, 0)];
         assert_eq!(activity(&jobs, '⠹').unwrap(), "⠹ scanning 214");
     }
 
     #[test]
     fn extra_jobs_are_counted_not_listed() {
-        let jobs = [
-            Job {
-                id: 1,
-                label: "fetching".into(),
-                done: 1,
-                total: 2,
-            },
-            Job {
-                id: 2,
-                label: "pruning".into(),
-                done: 0,
-                total: 4,
-            },
-        ];
+        let jobs = [job("fetching", 1, 2), job("pruning", 0, 4)];
         assert_eq!(activity(&jobs, '⠹').unwrap(), "⠹ fetching 1/2 +1");
     }
 
