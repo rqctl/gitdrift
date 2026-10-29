@@ -85,7 +85,7 @@ fn lists_recent_commits_newest_first_capped_at_ten() {
     );
     assert_eq!(d.recent[0].short_id.len(), 7);
     assert!(d.recent[0].time.is_some());
-    assert_eq!(d.recent[0].author, "Test");
+    assert_eq!(d.recent[0].author, "test");
 }
 
 #[test]

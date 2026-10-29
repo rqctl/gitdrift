@@ -195,7 +195,14 @@ fn recent(repo: &gix::Repository) -> Vec<CommitInfo> {
                 author: commit
                     .author()
                     .ok()
-                    .map(|a| a.name.to_string())
+                    .map(|a| {
+                        a.email
+                            .to_string()
+                            .split('@')
+                            .next()
+                            .unwrap_or_default()
+                            .to_string()
+                    })
                     .unwrap_or_default(),
                 time: commit.time().ok().map(|t| t.seconds),
             })
@@ -298,7 +305,7 @@ fn incoming(path: &Path, limit: usize) -> Option<Incoming> {
         path,
         &[
             "log",
-            "--format=%h%x09%an%x09%ct%x09%s",
+            "--format=%h%x09%al%x09%ct%x09%s",
             "-n",
             &limit.to_string(),
             "HEAD..@{u}",
